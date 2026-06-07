@@ -27,7 +27,7 @@ type Config struct {
 func LoadConfig() Config {
 	baseDir := loadDotEnv()
 	return Config{
-		GeminiModel:    env("GEMINI_MODEL", "gemini-3.1-pro-preview"),
+		GeminiModel:    env("GEMINI_MODEL", "gemini-3.5-flash"),
 		GCPProject:     os.Getenv("GOOGLE_CLOUD_PROJECT"),
 		GCPLocation:    env("GOOGLE_CLOUD_LOCATION", "global"),
 		DTEnvironment:  os.Getenv("DT_ENVIRONMENT"),

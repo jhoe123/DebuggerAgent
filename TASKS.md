@@ -20,15 +20,13 @@
   agent, launches the MCP server under Node 24, calls `list_problems` live, and returns structured
   JSON (tenant currently has 0 problems → that's T3). Key gotcha solved: prepend Node 24 to the
   MCP child's PATH so npx doesn't spawn the server under system Node 20.12.
-- **T3 + T6 DONE & verified live end-to-end.** Seeded a real exception (checkout-demo, 5x) into
-  Dynatrace via OTel. Backend `/api` endpoints all work against live services:
-  - `GET /api/problems` → lists the error via direct MCP `execute_dql` (spans).
-  - `POST /api/investigate` → agent finds the exception, reads `main.go`, returns root cause at
-    `main.go:99` + a correct bounds-check patch (~70s; Gemini 3.1-pro + MCP round-trips).
-  - `POST /api/approve-patch` → writes patched file + `.diff` to `.patches/` (no merge/deploy).
-  - Frontend uses the live API automatically (Vite proxies `/api` → :8080; mock only as fallback).
-- **Next action (me):** **T9** Cloud Run deploy + **T10/T11/T12** (README/judge notes, demo video,
-  Devpost). Optional polish: investigate latency, SSE streaming.
+- **T1–T10 DONE. Live on Cloud Run:** https://debugger-agent-460077240357.us-central1.run.app
+  - All `/api` endpoints verified on the hosted URL: problems list, investigate (root cause @
+    `main.go:99`, **~31s** on **gemini-3.5-flash**), approve-patch (writes to /tmp/patches).
+  - Deploy: `gcloud run deploy --source` via **git-bash** (PowerShell gcloud's strict TLS rejects
+    the Avast root); runtime image installs `ca-certificates` (Go→Vertex TLS).
+- **Remaining (you):** **T11** record ≤3-min demo video → YouTube/Vimeo; **T12** file the Devpost
+  submission (Dynatrace track) with the hosted URL, repo URL, video, and description.
 - **Deadline:** **2026-06-11 14:00 PDT.**
 
 ## Tasks
@@ -43,8 +41,8 @@
 | T6 | Backend REST endpoints (list problems, investigate, approve-patch) | T5 | [x] |
 | T7 | React+TS frontend: chat, problem list, root-cause panel, **diff viewer + Approve** (live + mock fallback) | T6 | [x] |
 | T8 | Layer in selected high-value adds (confidence score, suggested regression test, severity ranking, NL follow-up, incident export) | T7 | [ ] |
-| T9 | Containerize + **deploy to Cloud Run**; public hosted URL; judge test instructions | T7 | [ ] |
-| T10| README finalize (setup/run/judge), `.env.example`, verify license detectable | T9 | [ ] |
+| T9 | Containerize + **deploy to Cloud Run**; public hosted URL; judge test instructions | T7 | [x] |
+| T10| README finalize (setup/run/judge), `.env.example`, verify license detectable | T9 | [x] |
 | T11| Record **≤3-min demo video**, upload public to YouTube/Vimeo | T9 | [ ] |
 | T12| **File Devpost submission**: hosted URL, description, repo, video, **Dynatrace track** | T10, T11 | [ ] |
 
@@ -85,3 +83,5 @@
 - 2026-06-08: T3+T5+T6+T7 done — seeded real OTel exception in Dynatrace; backend `/api`
   (problems via direct MCP DQL, investigate via agent, approve-patch) verified live; UI live+mock.
   Verified: investigate returns root cause @ main.go:99 + correct patch; approve writes to .patches/.
+- 2026-06-08: T9+T10 done — deployed to Cloud Run (gemini-3.5-flash, ~31s investigate); hosted URL
+  verified end-to-end; README judge instructions + URL added. Remaining: T11 video, T12 submission.

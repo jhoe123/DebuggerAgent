@@ -98,3 +98,8 @@ DebuggerAgent/
 - 2026-06-08: T2 Dynatrace done — tenant `ney49045`, MCP server v1.8.6 connects (20 tools:
   list_problems, list_exceptions, execute_dql, get_environment_info, find_entity_by_name, …).
   MCP server needs Node ≥ 20.17 → spawn it with portable Node 24 (`MCP_NODE_BIN`).
+- 2026-06-08: T3–T9 done & deployed. Backend exceptions are read from the `spans` Grail table via
+  execute_dql (not list_problems/list_exceptions). Switched model to **gemini-3.5-flash** (fast,
+  ~30s investigations). **Live on Cloud Run:** https://debugger-agent-460077240357.us-central1.run.app
+  Deploy gotchas solved: run gcloud via git-bash (PowerShell's strict TLS rejects the Avast root);
+  runtime image needs `ca-certificates` for the Go→Vertex TLS call.

@@ -104,11 +104,15 @@ are baked into the image. For production use Secret Manager (`--set-secrets`) fo
 
 ## For hackathon judges
 
-- **Hosted URL:** _(add after T9 deploy)_
-- **Test flow:** open the URL → select the seeded problem → click **Investigate** → review the
-  AI root-cause summary + proposed patch → click **Approve** to see the diff written (the agent
-  never merges or deploys).
-- No login required (or use the provided test credentials, if any).
+- **Hosted URL:** https://debugger-agent-460077240357.us-central1.run.app — **no login required.**
+- **Test flow:** open the URL → select the **checkout-demo** problem (a real `index out of range`
+  exception captured from Dynatrace) → click **Investigate with AI** → the agent queries Dynatrace
+  spans, reads the source, and returns the root cause at `main.go:99` with a proposed patch
+  (~30s) → click **Approve patch** to write the diff to a branch/file. The agent **never merges
+  or deploys** — a human always approves.
+- **What's Gemini-powered:** the investigation (root-cause reasoning + patch) runs on an ADK Go
+  agent backed by **Gemini 3.5 Flash** on Vertex AI, using the **Dynatrace MCP server** for all
+  telemetry access.
 
 ## Pushing to GitHub (manual — `gh` not installed in this environment)
 
