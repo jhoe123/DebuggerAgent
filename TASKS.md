@@ -20,13 +20,15 @@
   agent, launches the MCP server under Node 24, calls `list_problems` live, and returns structured
   JSON (tenant currently has 0 problems → that's T3). Key gotcha solved: prepend Node 24 to the
   MCP child's PATH so npx doesn't spawn the server under system Node 20.12.
-- **T3 instrumented (code done):** demo_app emits a real OTel span + exception (stack trace) to
-  Dynatrace OTLP; `scripts/run_demo.ps1` runs it. **Awaiting you:** create a Dynatrace **API token**
-  (`dt0c01...`, scope `openTelemetryTrace.ingest`) → `DT_API_TOKEN` in `.env`, then run the script
-  and hit `/checkout?index=99` to seed the exception.
-- **Next action (me):** **T6** — backend `/api` endpoints (problems list, investigate w/ SSE,
-  approve-patch) wired to the agent + a direct MCP query for the problem list; flip the React UI
-  from mock to live.
+- **T3 + T6 DONE & verified live end-to-end.** Seeded a real exception (checkout-demo, 5x) into
+  Dynatrace via OTel. Backend `/api` endpoints all work against live services:
+  - `GET /api/problems` → lists the error via direct MCP `execute_dql` (spans).
+  - `POST /api/investigate` → agent finds the exception, reads `main.go`, returns root cause at
+    `main.go:99` + a correct bounds-check patch (~70s; Gemini 3.1-pro + MCP round-trips).
+  - `POST /api/approve-patch` → writes patched file + `.diff` to `.patches/` (no merge/deploy).
+  - Frontend uses the live API automatically (Vite proxies `/api` → :8080; mock only as fallback).
+- **Next action (me):** **T9** Cloud Run deploy + **T10/T11/T12** (README/judge notes, demo video,
+  Devpost). Optional polish: investigate latency, SSE streaming.
 - **Deadline:** **2026-06-11 14:00 PDT.**
 
 ## Tasks
@@ -35,11 +37,11 @@
 |----|------|-----------|--------|
 | T1 | Scaffold repo + LICENSE + PROJECT.md/TASKS.md/README + initial commit (done) + push **public** GitHub (manual) | — | [~] |
 | T2 | Cloud/Dynatrace setup: GCP project+billing+APIs, Gemini 3 access, Dynatrace trial + platform token, run + verify MCP server | — | [x] |
-| T3 | `demo_app/` (Go) that throws a real exception; instrument with OTel→Dynatrace; trigger so an exception appears | T2 | [~] |
+| T3 | `demo_app/` (Go) that throws a real exception; instrument with OTel→Dynatrace; trigger so an exception appears | T2 | [x] |
 | T4 | Backend skeleton: Go module, ADK Go agent w/ Gemini 3, connect **Dynatrace MCP** toolset (static token) | T2 | [x] |
-| T5 | Implement `read_source` + `propose_patch` tools; agent prompt for fetch→correlate→summarize→diff | T3, T4 | [ ] |
-| T6 | Backend REST/SSE endpoints (list problems, investigate, approve-patch) | T5 | [ ] |
-| T7 | React+TS frontend: chat, problem list, root-cause panel, **diff viewer + Approve** | T6 | [ ] |
+| T5 | Implement `read_source` + `propose_patch` tools; agent prompt for fetch→correlate→summarize→diff | T3, T4 | [x] |
+| T6 | Backend REST endpoints (list problems, investigate, approve-patch) | T5 | [x] |
+| T7 | React+TS frontend: chat, problem list, root-cause panel, **diff viewer + Approve** (live + mock fallback) | T6 | [x] |
 | T8 | Layer in selected high-value adds (confidence score, suggested regression test, severity ranking, NL follow-up, incident export) | T7 | [ ] |
 | T9 | Containerize + **deploy to Cloud Run**; public hosted URL; judge test instructions | T7 | [ ] |
 | T10| README finalize (setup/run/judge), `.env.example`, verify license detectable | T9 | [ ] |
@@ -80,3 +82,6 @@
 - 2026-06-08: T4 done — ADK Go v1.4.0 agent (Gemini 3.1, Dynatrace MCP toolset, read_source +
   propose_patch). Smoke test (`cmd/agentcheck`) runs live end-to-end. Node-24-on-PATH fix for the
   MCP child process.
+- 2026-06-08: T3+T5+T6+T7 done — seeded real OTel exception in Dynatrace; backend `/api`
+  (problems via direct MCP DQL, investigate via agent, approve-patch) verified live; UI live+mock.
+  Verified: investigate returns root cause @ main.go:99 + correct patch; approve writes to .patches/.

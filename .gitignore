@@ -28,3 +28,6 @@ Thumbs.db
 
 # Build / deploy artifacts
 /deploy/*.local.yaml
+
+# Agent-written patches (generated on approval)
+/.patches/
