@@ -20,10 +20,13 @@
   agent, launches the MCP server under Node 24, calls `list_problems` live, and returns structured
   JSON (tenant currently has 0 problems → that's T3). Key gotcha solved: prepend Node 24 to the
   MCP child's PATH so npx doesn't spawn the server under system Node 20.12.
-- **Next action (me):** **T6** (`/api` endpoints + flip UI to live) and **T3** (seed a real Problem
-  in Dynatrace so the demo has something to investigate — needs a decision, see below).
-- **T3 decision needed:** how to get a real problem/exception into the tenant (OTel ingest vs
-  OneAgent vs log-ingest). Affects whether another token / admin is required.
+- **T3 instrumented (code done):** demo_app emits a real OTel span + exception (stack trace) to
+  Dynatrace OTLP; `scripts/run_demo.ps1` runs it. **Awaiting you:** create a Dynatrace **API token**
+  (`dt0c01...`, scope `openTelemetryTrace.ingest`) → `DT_API_TOKEN` in `.env`, then run the script
+  and hit `/checkout?index=99` to seed the exception.
+- **Next action (me):** **T6** — backend `/api` endpoints (problems list, investigate w/ SSE,
+  approve-patch) wired to the agent + a direct MCP query for the problem list; flip the React UI
+  from mock to live.
 - **Deadline:** **2026-06-11 14:00 PDT.**
 
 ## Tasks
@@ -32,7 +35,7 @@
 |----|------|-----------|--------|
 | T1 | Scaffold repo + LICENSE + PROJECT.md/TASKS.md/README + initial commit (done) + push **public** GitHub (manual) | — | [~] |
 | T2 | Cloud/Dynatrace setup: GCP project+billing+APIs, Gemini 3 access, Dynatrace trial + platform token, run + verify MCP server | — | [x] |
-| T3 | `demo_app/` (Go) that throws a real exception; instrument with Dynatrace; trigger so a **Problem** appears | T2 | [ ] |
+| T3 | `demo_app/` (Go) that throws a real exception; instrument with OTel→Dynatrace; trigger so an exception appears | T2 | [~] |
 | T4 | Backend skeleton: Go module, ADK Go agent w/ Gemini 3, connect **Dynatrace MCP** toolset (static token) | T2 | [x] |
 | T5 | Implement `read_source` + `propose_patch` tools; agent prompt for fetch→correlate→summarize→diff | T3, T4 | [ ] |
 | T6 | Backend REST/SSE endpoints (list problems, investigate, approve-patch) | T5 | [ ] |
