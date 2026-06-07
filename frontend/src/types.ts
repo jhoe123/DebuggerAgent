@@ -8,6 +8,9 @@ export interface Problem {
   affectedUsers: number;
   startedAt: string; // ISO timestamp
   entity: string;
+  occurrences?: number;
+  grailScannedBytes?: number;
+  dynatraceUrl?: string;
 }
 
 export interface CodeLocation {
@@ -39,4 +42,39 @@ export interface Investigation {
 
 export interface ApproveResult {
   writtenTo: string;
+}
+
+export interface Step {
+  stage: string; // investigate | apply | test | build | deploy | verify | tool
+  status: "running" | "ok" | "fail" | "info";
+  message: string;
+  detail?: string;
+}
+
+export interface PipelineResult {
+  steps: Step[];
+  success: boolean;
+}
+
+export interface PipelineOptions {
+  apply: boolean;
+  test: boolean;
+  build: boolean;
+  deploy: boolean;
+}
+
+export interface TestStatus {
+  sourceState: "buggy" | "modified";
+  reachable: boolean;
+  pendingPatch: boolean;
+  demoAppUrl: string;
+}
+
+export interface TriggerResult {
+  sent: number;
+  codes: number[];
+}
+
+export interface AskResult {
+  answer: string;
 }

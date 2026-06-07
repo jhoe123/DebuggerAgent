@@ -129,6 +129,65 @@ code { background: var(--panel-2); padding: 0.1rem 0.35rem; border-radius: 4px; 
 .suggested-test p { margin: 0; color: var(--muted); }
 
 .approved { color: #56d364; font-weight: 600; }
+.failed { color: var(--del); font-weight: 600; }
+.muted { color: var(--muted); }
+
+/* problem card chips */
+.problem-chips { display: flex; gap: 0.4rem; margin-top: 0.5rem; flex-wrap: wrap; }
+.mini-chip { font-size: 0.7rem; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 0.1rem 0.5rem; }
+.mini-chip.link { color: var(--accent); text-decoration: none; }
+.mini-chip.link:hover { border-color: var(--accent); }
+
+/* root-cause header actions + export */
+.rc-actions { display: flex; align-items: center; gap: 0.5rem; }
+.ghost-btn { background: transparent; color: var(--accent); border: 1px solid var(--border); border-radius: 6px; padding: 0.3rem 0.6rem; font-size: 0.8rem; cursor: pointer; }
+.ghost-btn:hover { border-color: var(--accent); }
+
+/* live step timeline */
+.steps { margin: 0.8rem 0; border-left: 2px solid var(--border); padding-left: 0.8rem; }
+.steps-title { margin: 0 0 0.5rem; color: var(--muted); font-size: 0.85rem; }
+.step { display: flex; align-items: baseline; gap: 0.5rem; padding: 0.2rem 0; font-size: 0.9rem; }
+.step-icon { width: 1rem; text-align: center; }
+.step-ok .step-icon { color: var(--add); }
+.step-fail { color: var(--del); }
+.step-fail .step-icon { color: var(--del); }
+.step-running .step-icon { color: var(--accent); }
+.step-detail { width: 100%; background: #0b0f14; border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem; font-size: 0.75rem; overflow-x: auto; white-space: pre-wrap; }
+
+/* Test Console */
+.test-console { border: 1px dashed #6b4f1d; background: #1f1a10; border-radius: 10px; margin-bottom: 1rem; }
+.tc-header { display: flex; align-items: center; gap: 0.6rem; padding: 0.6rem 0.9rem; cursor: pointer; }
+.tc-badge { background: #3a2a12; color: #e3b341; border: 1px solid #6b4f1d; border-radius: 4px; padding: 0.15rem 0.5rem; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.05em; }
+.tc-note { color: #b3924a; font-size: 0.78rem; }
+.tc-toggle { margin-left: auto; color: #b3924a; }
+.tc-body { padding: 0 0.9rem 0.9rem; }
+.tc-status { display: flex; gap: 0.5rem; margin-bottom: 0.6rem; flex-wrap: wrap; }
+.chip { font-size: 0.75rem; border-radius: 999px; padding: 0.15rem 0.6rem; border: 1px solid var(--border); color: var(--muted); }
+.chip-ok { background: #16331f; color: #56d364; border-color: #2ea043; }
+.chip-warn { background: #4a1e1e; color: #ff7b72; border-color: #f85149; }
+.chip-info { background: #1e2f4a; color: #79c0ff; border-color: #4f9cf9; }
+.tc-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.tc-actions button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem 0.8rem; cursor: pointer; font-size: 0.85rem; }
+.tc-actions button:hover:not(:disabled) { border-color: #e3b341; }
+.tc-actions button:disabled { opacity: 0.6; cursor: default; }
+
+/* Pipeline */
+.pipeline { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.pipeline-opts { display: flex; align-items: center; gap: 0.9rem; margin: 0.6rem 0; flex-wrap: wrap; }
+.stage-toggle { color: var(--muted); font-size: 0.85rem; text-transform: capitalize; }
+.run-btn { margin-left: auto; background: var(--accent); color: #04101f; border: none; border-radius: 8px; padding: 0.5rem 1rem; font-weight: 700; cursor: pointer; }
+.run-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* Follow-up Q&A */
+.followup { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.followup h4 { margin: 0 0 0.6rem; }
+.qa { margin-bottom: 0.7rem; }
+.qa-q { margin: 0; font-weight: 600; }
+.qa-a { margin: 0.2rem 0 0; color: var(--muted); white-space: pre-wrap; }
+.qa-input { display: flex; gap: 0.5rem; }
+.qa-input input { flex: 1; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem 0.7rem; color: var(--text); }
+.qa-input button { background: var(--accent); color: #04101f; border: none; border-radius: 6px; padding: 0.5rem 0.9rem; font-weight: 700; cursor: pointer; }
+.qa-input button:disabled { opacity: 0.6; cursor: default; }
 
 @media (max-width: 760px) {
   .layout { grid-template-columns: 1fr; }

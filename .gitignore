@@ -7,6 +7,8 @@
 /backend/bin/
 /backend/tmp/
 *.exe
+*.exe~
+/demo_app/demo_app_run*
 *.test
 *.out
 

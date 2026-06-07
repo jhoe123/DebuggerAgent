@@ -1,12 +1,14 @@
 import { useState } from "react";
 import type { ApproveResult, Investigation } from "../types";
-import { approvePatch } from "../api";
+import { approvePatch, ask } from "../api";
+import { downloadMarkdown, toMarkdown } from "../report";
 import { DiffViewer } from "./DiffViewer";
 
 export function InvestigationPanel({ data }: { data: Investigation }) {
   const { rootCause, confidence, alternatives, proposedPatch, suggestedTest } = data;
   const [approving, setApproving] = useState(false);
   const [result, setResult] = useState<ApproveResult | null>(null);
+  const [copied, setCopied] = useState(false);
 
   async function onApprove() {
     setApproving(true);
@@ -17,13 +19,27 @@ export function InvestigationPanel({ data }: { data: Investigation }) {
     }
   }
 
+  async function onCopy() {
+    await navigator.clipboard.writeText(toMarkdown(data));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
+
   return (
     <section className="investigation">
       <div className="rc-header">
         <h2>Root cause</h2>
-        <span className="confidence" title="Agent confidence">
-          {Math.round(confidence * 100)}% confidence
-        </span>
+        <div className="rc-actions">
+          <span className="confidence" title="Agent confidence">
+            {Math.round(confidence * 100)}% confidence
+          </span>
+          <button className="ghost-btn" onClick={onCopy}>
+            {copied ? "Copied!" : "Copy report"}
+          </button>
+          <button className="ghost-btn" onClick={() => downloadMarkdown(`incident-${data.problemId}.md`, toMarkdown(data))}>
+            Download .md
+          </button>
+        </div>
       </div>
 
       <dl className="rc-grid">
@@ -72,6 +88,54 @@ export function InvestigationPanel({ data }: { data: Investigation }) {
           {approving ? "Writing patch…" : "Approve patch"}
         </button>
       )}
+
+      <FollowUp problemId={data.problemId} />
     </section>
+  );
+}
+
+// Natural-language follow-up Q&A about the incident (agent may run DQL).
+function FollowUp({ problemId }: { problemId: string }) {
+  const [q, setQ] = useState("");
+  const [thread, setThread] = useState<{ q: string; a: string }[]>([]);
+  const [asking, setAsking] = useState(false);
+
+  async function onAsk() {
+    const question = q.trim();
+    if (!question || asking) return;
+    setAsking(true);
+    setQ("");
+    try {
+      const { answer } = await ask(problemId, question);
+      setThread((t) => [...t, { q: question, a: answer }]);
+    } catch (e) {
+      setThread((t) => [...t, { q: question, a: `(error: ${String(e)})` }]);
+    } finally {
+      setAsking(false);
+    }
+  }
+
+  return (
+    <div className="followup">
+      <h4>Ask a follow-up</h4>
+      {thread.map((t, i) => (
+        <div key={i} className="qa">
+          <p className="qa-q">{t.q}</p>
+          <p className="qa-a">{t.a}</p>
+        </div>
+      ))}
+      <div className="qa-input">
+        <input
+          value={q}
+          placeholder="e.g. how many times did this happen in the last day?"
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && onAsk()}
+          disabled={asking}
+        />
+        <button onClick={onAsk} disabled={asking || !q.trim()}>
+          {asking ? "Thinking…" : "Ask"}
+        </button>
+      </div>
+    </div>
   );
 }

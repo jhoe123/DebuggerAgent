@@ -1,33 +1,48 @@
 import { useEffect, useState } from "react";
-import type { Investigation, Problem } from "./types";
-import { investigate, listProblems, wasMock } from "./api";
+import type { Investigation, Problem, Step } from "./types";
+import { investigateStream, listProblems, testStatus, wasMock } from "./api";
 import { ProblemList } from "./components/ProblemList";
 import { InvestigationPanel } from "./components/Investigation";
+import { AgentSteps } from "./components/AgentSteps";
+import { TestConsole } from "./components/TestConsole";
+import { Pipeline } from "./components/Pipeline";
 
 export function App() {
   const [problems, setProblems] = useState<Problem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [result, setResult] = useState<Investigation | null>(null);
+  const [steps, setSteps] = useState<Step[]>([]);
   const [investigating, setInvestigating] = useState(false);
   const [mock, setMock] = useState(false);
+  const [consoleAvailable, setConsoleAvailable] = useState(false);
+
+  async function refreshProblems() {
+    const p = await listProblems();
+    setProblems(p);
+    setMock(wasMock());
+  }
 
   useEffect(() => {
-    listProblems().then((p) => {
-      setProblems(p);
-      setMock(wasMock());
-    });
+    refreshProblems();
+    testStatus()
+      .then(() => setConsoleAvailable(true))
+      .catch(() => setConsoleAvailable(false));
   }, []);
 
   function onSelect(id: string) {
     setSelectedId(id);
     setResult(null);
+    setSteps([]);
   }
 
   async function onInvestigate() {
     if (!selectedId) return;
     setInvestigating(true);
+    setSteps([]);
+    setResult(null);
     try {
-      setResult(await investigate(selectedId));
+      const inv = await investigateStream(selectedId, (s) => setSteps((prev) => [...prev, s]));
+      setResult(inv);
       setMock(wasMock());
     } finally {
       setInvestigating(false);
@@ -39,10 +54,12 @@ export function App() {
       <header className="topbar">
         <div>
           <h1>DebuggerAgent</h1>
-          <p className="tagline">AI Root-Cause Investigator · Gemini 3 + Dynatrace</p>
+          <p className="tagline">AI Root-Cause Investigator · Gemini + Dynatrace MCP</p>
         </div>
         {mock && <span className="mock-badge">demo data (mock) — backend not connected</span>}
       </header>
+
+      {consoleAvailable && <TestConsole onChange={refreshProblems} />}
 
       <div className="layout">
         <ProblemList problems={problems} selectedId={selectedId} onSelect={onSelect} />
@@ -62,7 +79,14 @@ export function App() {
             </div>
           )}
 
-          {result && <InvestigationPanel data={result} />}
+          {steps.length > 0 && <AgentSteps steps={steps} title="Agent activity" />}
+
+          {result && (
+            <>
+              <InvestigationPanel data={result} />
+              <Pipeline available={consoleAvailable} />
+            </>
+          )}
         </main>
       </div>
     </div>
