@@ -59,8 +59,21 @@ Dynatrace problem ──MCP──▶ Go/ADK agent (Gemini 3) ──▶ root-caus
      DT_ENVIRONMENT=... DT_PLATFORM_TOKEN=... npx -y @dynatrace-oss/dynatrace-mcp-server@latest
      ```
 
-4. **Seed a production problem** (see [demo_app/](demo_app/)): run the instrumented buggy
-   service and trigger the failing endpoint so a **Problem** appears in Dynatrace.
+4. **Seed a production problem (T3)** — emit a real exception from `demo_app` to Dynatrace via
+   OpenTelemetry:
+   - Create a Dynatrace **API token** (Settings → Access Tokens → **API tokens** → Generate;
+     token starts `dt0c01...`) with the **Ingest OpenTelemetry traces** (`openTelemetryTrace.ingest`)
+     scope. Put it in `DT_API_TOKEN` in `.env`.
+   - Run the instrumented demo app (derives the OTLP endpoint from `DT_ENVIRONMENT`):
+     ```powershell
+     pwsh scripts/run_demo.ps1
+     ```
+   - In another shell, trigger the bug a few times:
+     ```powershell
+     1..5 | % { curl "http://localhost:9090/checkout?index=99" }
+     ```
+   - Within ~1–2 min the exception (with stack trace referencing `demo_app/main.go`) is queryable
+     in Dynatrace; the agent finds it via `list_exceptions` / `execute_dql`.
 
 ## Run (local)
 
