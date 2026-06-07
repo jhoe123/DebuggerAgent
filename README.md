@@ -87,6 +87,10 @@ git push -u origin main
 ```
 Ensure the repo is **public** and the `LICENSE` file is present (both required by the rules).
 
+## Author
+
+Jhoemar Pagao — <jhoemar.pagao@gmail.com>
+
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE) © 2026 Jhoemar Pagao.

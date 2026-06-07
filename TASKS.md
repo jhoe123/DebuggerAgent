@@ -6,16 +6,18 @@
 
 ## Current State
 
-- **Phase:** T1 in progress — repo scaffolded.
-- **Next action:** Finish T1 (commit + push public repo), then **T2** (cloud/Dynatrace setup, user-driven).
-- **Blockers:** none. `gh` CLI not installed → GitHub push is a manual step (see README).
+- **Phase:** T1 nearly done — repo scaffolded, builds green, **initial commit made**.
+- **Next action:** Push to a **public GitHub repo** (manual — see README "Pushing to GitHub"),
+  then start **T2** (cloud/Dynatrace setup, user-driven).
+- **Blockers:** GitHub push needs your account (`gh` CLI not installed here). T2 needs your
+  GCP + Dynatrace accounts.
 - **Deadline:** **2026-06-11 14:00 PDT.**
 
 ## Tasks
 
 | ID | Task | Depends on | Status |
 |----|------|-----------|--------|
-| T1 | Scaffold repo + LICENSE + PROJECT.md/TASKS.md/README + initial commit + push **public** GitHub | — | [~] |
+| T1 | Scaffold repo + LICENSE + PROJECT.md/TASKS.md/README + initial commit (done) + push **public** GitHub (manual) | — | [~] |
 | T2 | Cloud/Dynatrace setup: GCP project+billing+APIs, Gemini 3 access, ADK Go install, Dynatrace trial + platform token, run + verify MCP server | — | [ ] |
 | T3 | `demo_app/` (Go) that throws a real exception; instrument with Dynatrace; trigger so a **Problem** appears | T2 | [ ] |
 | T4 | Backend skeleton: Go module, ADK Go agent w/ Gemini 3, connect **Dynatrace MCP** toolset (static token) | T2 | [ ] |
