@@ -88,6 +88,35 @@ cd frontend && npm install && npm run dev
 Open the frontend, pick the latest Dynatrace problem, let the agent investigate, review the
 root-cause summary and proposed diff, then **Approve** to write the patch to a branch/file.
 
+## Configurable autonomy: auto-remediation pipeline + Test Console (local)
+
+Autonomy is a **setting**. By default the agent is human-gated (approve → patch written to a
+branch, never merged/deployed). Opt-in **auto-remediation** runs a full pipeline:
+
+```
+Apply → Test → Build → Deploy → Verify     (deploy is GATED on tests passing)
+```
+
+A committed regression test (`demo_app/checkout_test.go`) fails on the seeded bug and passes once
+the fix is applied, so even autopilot won't ship a broken patch. The pipeline applies the patch to
+the service source, runs the test, rebuilds, restarts, and verifies `/checkout?index=99` goes from
+HTTP 500 to fixed. Logic lives in [`backend/internal/democtl`](backend/internal/democtl).
+
+A **Test Console** (clearly labeled "testing only") lets you trigger the incident, reset the demo
+source to its committed buggy state (`git checkout`), and see status — for repeatable demos.
+
+These controls are **gated by `ENABLE_TEST_CONSOLE` and are local-only** (hidden on the hosted URL,
+where the demo stays human-gated). Enable locally:
+
+```bash
+# backend OWNS demo_app (builds, runs, restarts it) when the flag is on:
+cd backend && ENABLE_TEST_CONSOLE=true go run ./cmd/server   # PowerShell: $env:ENABLE_TEST_CONSOLE="true"
+cd frontend && npm run dev
+```
+
+The UI then shows the Test Console + an auto-remediation panel (autonomy toggle + per-stage
+checkboxes) with a live Apply→Test→Build→Deploy→Verify stream.
+
 ## Deploy (Cloud Run)
 
 The root `Dockerfile` ships a Node 24 runtime (to run the Dynatrace MCP server) plus the Go
@@ -97,7 +126,7 @@ account (grant it `roles/aiplatform.user`); the Dynatrace token is passed as an 
 ```bash
 gcloud run deploy debugger-agent --source . --region us-central1 --allow-unauthenticated \
   --memory 1Gi --cpu 1 --timeout 300 \
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=<project>,GEMINI_MODEL=gemini-3.1-pro-preview,DT_ENVIRONMENT=<tenant>,DT_PLATFORM_TOKEN=<token>"
+  --set-env-vars "GOOGLE_CLOUD_PROJECT=<project>,GEMINI_MODEL=gemini-3.5-flash,DT_ENVIRONMENT=<tenant>,DT_PLATFORM_TOKEN=<token>"
 ```
 `GOOGLE_CLOUD_LOCATION=global`, `WEB_DIR`, `SOURCE_ROOT`, and `PATCH_OUTPUT_DIR=/tmp/patches`
 are baked into the image. For production use Secret Manager (`--set-secrets`) for the token.
