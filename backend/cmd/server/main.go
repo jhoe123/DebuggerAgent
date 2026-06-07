@@ -313,6 +313,12 @@ func withCORS(next http.Handler) http.Handler {
 func spaFileServer(dir string) http.Handler {
 	fs := http.FileServer(http.Dir(dir))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Unmatched API routes must 404 as JSON-ish, not fall back to index.html
+		// (e.g. /api/test/* when the Test Console is disabled).
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
 		if _, err := os.Stat(dir + r.URL.Path); err != nil && !strings.HasPrefix(r.URL.Path, "/assets") {
 			http.ServeFile(w, r, dir+"/index.html")
 			return
