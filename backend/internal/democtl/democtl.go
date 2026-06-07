@@ -21,12 +21,13 @@ import (
 	"github.com/debuggeragent/backend/internal/tools"
 )
 
-// Options selects which pipeline stages run.
+// Options selects which pipeline stages run and which scenario to remediate.
 type Options struct {
-	Apply  bool `json:"apply"`
-	Test   bool `json:"test"`
-	Build  bool `json:"build"`
-	Deploy bool `json:"deploy"`
+	Apply    bool   `json:"apply"`
+	Test     bool   `json:"test"`
+	Build    bool   `json:"build"`
+	Deploy   bool   `json:"deploy"`
+	Scenario string `json:"scenario"` // "error" (default) | "performance"
 }
 
 // Controller owns the local demo_app process and source.
@@ -126,7 +127,9 @@ func (c *Controller) Status(ctx context.Context) api.TestStatus {
 	}
 }
 
-// Trigger fires the buggy endpoint n times (+ one valid request) to seed exceptions.
+// Trigger seeds telemetry for BOTH scenarios: the buggy /checkout (exceptions) and
+// the slow /report (high latency), so an error problem and a performance problem
+// both surface in Dynatrace.
 func (c *Controller) Trigger(ctx context.Context, n int) api.TriggerResult {
 	if n <= 0 {
 		n = 5
@@ -137,6 +140,9 @@ func (c *Controller) Trigger(ctx context.Context, n int) api.TriggerResult {
 		code, _ := c.get(ctx, "/checkout?index=99")
 		res.Sent++
 		res.Codes = append(res.Codes, code)
+		rc, _ := c.get(ctx, "/report?n=200") // seed slow-operation telemetry
+		res.Sent++
+		res.Codes = append(res.Codes, rc)
 	}
 	return res
 }
@@ -157,12 +163,17 @@ func (c *Controller) ResetSource(ctx context.Context) error {
 // gated on tests passing. Returns the terminal result.
 func (c *Controller) Remediate(ctx context.Context, opts Options, emit func(api.Step)) api.PipelineResult {
 	var steps []api.Step
+	var files []string
+	verify := ""
 	step := func(s api.Step) { steps = append(steps, s); if emit != nil { emit(s) } }
 	fail := func(stage, msg, detail string) api.PipelineResult {
 		step(api.Step{Stage: stage, Status: "fail", Message: msg, Detail: detail})
-		return api.PipelineResult{Steps: steps, Success: false}
+		return api.PipelineResult{Steps: steps, Success: false, Files: files, Verify: verify}
 	}
 
+	if prop := c.patches.Latest(); prop != nil {
+		files = []string{prop.File}
+	}
 	if opts.Apply {
 		step(api.Step{Stage: "apply", Status: "running", Message: "Applying the proposed patch to demo_app source"})
 		if err := c.ApplyPatch(); err != nil {
@@ -172,7 +183,7 @@ func (c *Controller) Remediate(ctx context.Context, opts Options, emit func(api.
 	}
 	if opts.Test {
 		step(api.Step{Stage: "test", Status: "running", Message: "Running go test (regression gate)"})
-		ok, out := c.test(ctx)
+		ok, out := c.test(ctx, opts.Scenario)
 		if !ok {
 			return fail("test", "Tests failed — deploy blocked", out)
 		}
@@ -194,16 +205,29 @@ func (c *Controller) Remediate(ctx context.Context, opts Options, emit func(api.
 		time.Sleep(1500 * time.Millisecond) // let it bind the port
 		step(api.Step{Stage: "deploy", Status: "ok", Message: "demo_app restarted"})
 
-		step(api.Step{Stage: "verify", Status: "running", Message: "Verifying /checkout?index=99"})
-		code, _ := c.get(ctx, "/checkout?index=99")
-		if code == 200 || code == 400 {
-			step(api.Step{Stage: "verify", Status: "ok", Message: fmt.Sprintf("Fixed — /checkout?index=99 now returns HTTP %d (was 500)", code)})
+		if opts.Scenario == "performance" {
+			step(api.Step{Stage: "verify", Status: "running", Message: "Verifying /report?n=200 latency"})
+			code, elapsed := c.timedGet(ctx, "/report?n=200")
+			verify = fmt.Sprintf("~657ms -> %dms", elapsed.Milliseconds())
+			if code == 200 && elapsed < 150*time.Millisecond {
+				step(api.Step{Stage: "verify", Status: "ok", Message: fmt.Sprintf("Fixed — /report?n=200 now %dms (was ~657ms)", elapsed.Milliseconds())})
+			} else {
+				step(api.Step{Stage: "verify", Status: "fail", Message: fmt.Sprintf("Still slow/failing: HTTP %d in %dms", code, elapsed.Milliseconds())})
+				return api.PipelineResult{Steps: steps, Success: false, Files: files, Verify: verify}
+			}
 		} else {
-			step(api.Step{Stage: "verify", Status: "fail", Message: fmt.Sprintf("Unexpected status HTTP %d", code)})
-			return api.PipelineResult{Steps: steps, Success: false}
+			step(api.Step{Stage: "verify", Status: "running", Message: "Verifying /checkout?index=99"})
+			code, _ := c.get(ctx, "/checkout?index=99")
+			verify = fmt.Sprintf("500 -> %d", code)
+			if code == 200 || code == 400 {
+				step(api.Step{Stage: "verify", Status: "ok", Message: fmt.Sprintf("Fixed — /checkout?index=99 now returns HTTP %d (was 500)", code)})
+			} else {
+				step(api.Step{Stage: "verify", Status: "fail", Message: fmt.Sprintf("Unexpected status HTTP %d", code)})
+				return api.PipelineResult{Steps: steps, Success: false, Files: files, Verify: verify}
+			}
 		}
 	}
-	return api.PipelineResult{Steps: steps, Success: true}
+	return api.PipelineResult{Steps: steps, Success: true, Files: files, Verify: verify}
 }
 
 // ApplyPatch writes the pending patch's full content to the demo_app source.
@@ -216,8 +240,14 @@ func (c *Controller) ApplyPatch() error {
 	return os.WriteFile(dest, []byte(prop.PatchedContent), 0o644)
 }
 
-func (c *Controller) test(ctx context.Context) (bool, string) {
-	out, err := c.goCmd(ctx, "test", "./...")
+// test runs the regression gate scoped to the scenario being remediated, so fixing
+// one bug isn't blocked by the other deliberately-seeded bug's failing test.
+func (c *Controller) test(ctx context.Context, scenario string) (bool, string) {
+	runFilter := "TestCheckout"
+	if scenario == "performance" {
+		runFilter = "TestReport"
+	}
+	out, err := c.goCmd(ctx, "test", "-run", runFilter, "./...")
 	return err == nil, out
 }
 
@@ -256,4 +286,11 @@ func (c *Controller) get(ctx context.Context, path string) (int, error) {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode, nil
+}
+
+// timedGet returns the status code and wall-clock latency of a GET (for perf verify).
+func (c *Controller) timedGet(ctx context.Context, path string) (int, time.Duration) {
+	start := time.Now()
+	code, _ := c.get(ctx, path)
+	return code, time.Since(start)
 }

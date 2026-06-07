@@ -4,7 +4,7 @@ import { approvePatch, ask } from "../api";
 import { downloadMarkdown, toMarkdown } from "../report";
 import { DiffViewer } from "./DiffViewer";
 
-export function InvestigationPanel({ data }: { data: Investigation }) {
+export function InvestigationPanel({ data, onApproved }: { data: Investigation; onApproved?: () => void }) {
   const { rootCause, confidence, alternatives, proposedPatch, suggestedTest } = data;
   const [approving, setApproving] = useState(false);
   const [result, setResult] = useState<ApproveResult | null>(null);
@@ -14,6 +14,7 @@ export function InvestigationPanel({ data }: { data: Investigation }) {
     setApproving(true);
     try {
       setResult(await approvePatch(data.problemId));
+      onApproved?.();
     } finally {
       setApproving(false);
     }
@@ -42,6 +43,8 @@ export function InvestigationPanel({ data }: { data: Investigation }) {
         </div>
       </div>
 
+      {rootCause.summary && <p className="rc-summary">{rootCause.summary}</p>}
+
       <dl className="rc-grid">
         <dt>What</dt>
         <dd>{rootCause.what}</dd>
@@ -56,6 +59,13 @@ export function InvestigationPanel({ data }: { data: Investigation }) {
         <dt>Impact</dt>
         <dd>{rootCause.impact}</dd>
       </dl>
+
+      {rootCause.details && (
+        <details className="alternatives further-reading">
+          <summary>Further reading — technical detail</summary>
+          <p>{rootCause.details}</p>
+        </details>
+      )}
 
       {alternatives.length > 0 && (
         <details className="alternatives">

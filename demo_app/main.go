@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"runtime/debug"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -46,6 +47,7 @@ func main() {
 		fmt.Fprintln(w, "ok")
 	})
 	http.HandleFunc("/checkout", checkoutHandler)
+	http.HandleFunc("/report", reportHandler)
 
 	addr := ":9090"
 	log.Printf("demo_app (buggy, OTel-instrumented) listening on %s", addr)
@@ -104,4 +106,35 @@ func parseIndex(s string) int {
 	var n int
 	_, _ = fmt.Sscanf(s, "%d", &n)
 	return n
+}
+
+// reportHandler builds a summary report. It is OTel-instrumented with its own span
+// ("GET /report") so its duration is queryable in Dynatrace. It has a deliberately
+// seeded PERFORMANCE bug: buildReport is slow (see below), so /report shows up as a
+// high-latency operation the agent can detect, explain, and optimize.
+func reportHandler(w http.ResponseWriter, r *http.Request) {
+	_, span := tracer.Start(r.Context(), "GET /report")
+	defer span.End()
+
+	n := parseIndex(r.URL.Query().Get("n"))
+	if n <= 0 {
+		n = 200
+	}
+	span.SetAttributes(attribute.Int("report.n", n))
+	total := buildReport(n)
+	fmt.Fprintf(w, "report: %d rows, checksum %d\n", n, total)
+}
+
+// buildReport aggregates n rows.
+//
+// PERF BUG: it does a per-item blocking call (simulating an unbatched/N+1 lookup),
+// so latency scales linearly with n and dominates /report's response time. The fix
+// is to drop the per-item sleep and aggregate in a single in-memory pass.
+func buildReport(n int) int {
+	total := 0
+	for i := 0; i < n; i++ {
+		time.Sleep(3 * time.Millisecond) // BUG: per-item blocking I/O — batch this instead.
+		total += i
+	}
+	return total
 }

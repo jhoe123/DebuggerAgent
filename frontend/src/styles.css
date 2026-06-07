@@ -98,6 +98,8 @@ body {
   border: 1px solid #2ea043;
   border-radius: 999px; padding: 0.25rem 0.7rem; font-size: 0.8rem; font-weight: 600;
 }
+.rc-summary { font-size: 1.05rem; line-height: 1.5; margin: 0.5rem 0 0.9rem; padding: 0.6rem 0.8rem; background: var(--panel-2); border-left: 3px solid var(--accent); border-radius: 6px; }
+.further-reading p { color: var(--muted); margin: 0.4rem 0 0; line-height: 1.55; }
 .rc-grid { display: grid; grid-template-columns: 90px 1fr; gap: 0.5rem 1rem; margin: 0.5rem 0 1rem; }
 .rc-grid dt { color: var(--muted); font-weight: 600; }
 .rc-grid dd { margin: 0; }
@@ -135,6 +137,7 @@ code { background: var(--panel-2); padding: 0.1rem 0.35rem; border-radius: 4px; 
 /* problem card chips */
 .problem-chips { display: flex; gap: 0.4rem; margin-top: 0.5rem; flex-wrap: wrap; }
 .mini-chip { font-size: 0.7rem; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 0.1rem 0.5rem; }
+.mini-chip.perf { background: #3a2a12; color: #e3b341; border-color: #6b4f1d; }
 .mini-chip.link { color: var(--accent); text-decoration: none; }
 .mini-chip.link:hover { border-color: var(--accent); }
 
@@ -177,6 +180,20 @@ code { background: var(--panel-2); padding: 0.1rem 0.35rem; border-radius: 4px; 
 .stage-toggle { color: var(--muted); font-size: 0.85rem; text-transform: capitalize; }
 .run-btn { margin-left: auto; background: var(--accent); color: #04101f; border: none; border-radius: 8px; padding: 0.5rem 1rem; font-weight: 700; cursor: pointer; }
 .run-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* Patch & change history */
+.history { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.history-header { display: flex; align-items: center; gap: 0.6rem; cursor: pointer; }
+.history-header h3 { margin: 0; }
+.history-header .ghost-btn { margin-left: auto; }
+.history-toggle { color: var(--muted); }
+.history-body { margin-top: 0.7rem; }
+.history-entry { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.8rem; margin-bottom: 0.6rem; }
+.history-top { display: flex; align-items: center; gap: 0.6rem; }
+.history-summary { flex: 1; font-size: 0.9rem; }
+.history-when { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+.history-files { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.45rem; }
+.history-entry .alternatives { margin-top: 0.5rem; }
 
 /* Follow-up Q&A */
 .followup { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border); }

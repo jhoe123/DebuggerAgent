@@ -7,14 +7,16 @@ export function toMarkdown(inv: Investigation): string {
     ? `\n## Alternative hypotheses\n${inv.alternatives.map((a) => `- ${a}`).join("\n")}\n`
     : "";
   const test = inv.suggestedTest ? `\n## Suggested regression test\n${inv.suggestedTest}\n` : "";
+  const tldr = rc.summary ? `\n> ${rc.summary}\n` : "";
+  const detail = rc.details ? `\n## Technical detail\n${rc.details}\n` : "";
   return `# Incident Report — ${inv.problemId}
-
+${tldr}
 - **Root cause:** ${rc.what}
 - **Location:** \`${rc.where.file}:${rc.where.line}\`
 - **Why:** ${rc.why}
 - **Impact:** ${rc.impact}
 - **Confidence:** ${Math.round(inv.confidence * 100)}%
-
+${detail}
 ## Proposed fix — \`${inv.proposedPatch.file}\`
 ${inv.proposedPatch.rationale}
 

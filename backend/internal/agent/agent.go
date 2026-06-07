@@ -28,11 +28,18 @@ import (
 )
 
 type readSourceArgs struct {
-	Path string `json:"path"`
+	Path   string `json:"path"`
+	Offset int    `json:"offset,omitempty"` // 1-based start line; 0 => beginning
+	Limit  int    `json:"limit,omitempty"`  // max lines; 0 => to end
+	Query  string `json:"query,omitempty"`  // search within the file instead of ranging
 }
 type readSourceResult struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
+	Path       string `json:"path"`
+	Content    string `json:"content"`
+	StartLine  int    `json:"start_line,omitempty"`
+	EndLine    int    `json:"end_line,omitempty"`
+	TotalLines int    `json:"total_lines"`
+	Truncated  bool   `json:"truncated,omitempty"`
 }
 type proposePatchArgs struct {
 	File           string `json:"file"`
@@ -72,14 +79,19 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	patches := tools.NewPatchStore(sb, cfg.PatchOutputDir)
 
 	readTool, err := functiontool.New(functiontool.Config{
-		Name:        "read_source",
-		Description: "Read a source file from the application repository (path relative to the project root) to correlate a stack trace or error to the responsible code.",
+		Name: "read_source",
+		Description: "Read a source file (path relative to the project root) to correlate a stack trace or error to the responsible code. " +
+			"For large files prefer a WINDOW: pass offset (1-based start line) and limit (number of lines), or query to search for a symbol and get matching regions with context. " +
+			"With no offset/limit/query it returns the whole file when small, otherwise a truncated head — total_lines tells you the file size so you can range further.",
 	}, func(_ tool.Context, args readSourceArgs) (readSourceResult, error) {
-		content, err := sb.ReadSource(args.Path)
+		r, err := sb.ReadSource(args.Path, tools.ReadOptions{Offset: args.Offset, Limit: args.Limit, Query: args.Query})
 		if err != nil {
 			return readSourceResult{}, err
 		}
-		return readSourceResult{Path: args.Path, Content: content}, nil
+		return readSourceResult{
+			Path: r.Path, Content: r.Content, StartLine: r.StartLine, EndLine: r.EndLine,
+			TotalLines: r.TotalLines, Truncated: r.Truncated,
+		}, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read_source tool: %w", err)
@@ -201,23 +213,37 @@ Be efficient: make the MINIMUM number of tool calls. Do not call tools you don't
 (skip get_environment_info, list_problems, list_exceptions, verify_dql). Follow these
 exact steps once each, in order:
 
-1. ONE execute_dql call to get the failing span + its exception:
+1. ONE execute_dql call to gather the evidence. For an ERROR investigation, get the failing span
+   + its exception:
    fetch spans, from:now()-30d | filter service.name == "<svc>" and span.status_code == "error"
    | fields span.name, span.status_message, span.events | sort timestamp desc | limit 1
-   The span.events array contains exception.message and exception.stack_trace.
-2. ONE read_source call for the file named in the stack trace. The path is RELATIVE to the
-   app source root: use the BASE NAME (".../demo_app/main.go:99" -> read_source("main.go")).
-3. ONE propose_patch call (file, unified_diff, patched_content, rationale). Pass the FULL
-   patched file content. This NEVER merges or deploys; a human approves separately.
+   The span.events array contains exception.message and exception.stack_trace. For a PERFORMANCE
+   investigation, the user request gives you the latency query to run instead (duration is in
+   nanoseconds) — use that to find the slow operation and its magnitude.
+2. read_source for the file named in the stack trace. The path is RELATIVE to the app source
+   root: use the BASE NAME (".../demo_app/main.go:99" -> read_source path "main.go"). Read a
+   WINDOW around the stack-trace line, not the whole file: offset = max(1, line-30), limit = 60.
+   Check total_lines; if the bug spans more, widen the window or pass query to search for the
+   responsible function/symbol. Do NOT read an entire large file.
+3. propose_patch (file, unified_diff, patched_content, rationale). patched_content must be the
+   FULL file. Change ONLY the function responsible for THIS problem and keep the rest of the file
+   byte-identical — the file may contain other, unrelated issues you must NOT touch. If the file is
+   larger than your window, do ONE more read_source with no offset/limit/query (or read enough to
+   reconstruct it) before proposing, so patched_content is complete. This NEVER merges or deploys;
+   a human approves.
 4. Respond with ONLY a single JSON object (no prose, no markdown fences) of this exact shape:
 {
-  "rootCause": {"what": "...", "where": {"file": "main.go", "line": 99}, "why": "...", "impact": "..."},
+  "rootCause": {"what": "...", "where": {"file": "main.go", "line": 99}, "why": "...", "impact": "...", "summary": "...", "details": "..."},
   "confidence": 0.0,
   "alternatives": ["..."],
   "proposedPatch": {"file": "main.go", "unifiedDiff": "--- a/main.go\n+++ b/main.go\n...", "rationale": "..."},
   "suggestedTest": "..."
 }
-confidence is your 0..1 confidence in the root cause. Keep strings concise.
+confidence is your 0..1 confidence in the root cause. Keep strings concise EXCEPT details.
+rootCause.summary is a single plain-language sentence a non-engineer can grasp (no jargon).
+rootCause.details is a longer engineer-facing deep dive for further reading: the exact failing
+expression, why the input reaches it, the relevant runtime/language semantics, and the edge
+conditions — a few sentences is fine.
 
 If instead the user asks a plain FOLLOW-UP QUESTION (not an investigation request), answer
 concisely in 1–3 sentences of prose (you may use execute_dql to check the data); in that case do

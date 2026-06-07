@@ -45,6 +45,10 @@ export function ProblemList({
               {p.entity} · {occ.toLocaleString()} occurrences
             </div>
             <div className="problem-chips">
+              {p.kind === "performance" && (
+                <span className="mini-chip perf" title="Performance problem">⏱ perf</span>
+              )}
+              {p.metric && <span className="mini-chip" title="Latency percentile">{p.metric}</span>}
               {scanned && <span className="mini-chip" title="Dynatrace Grail bytes scanned">Grail: {scanned}</span>}
               {p.dynatraceUrl && (
                 <a

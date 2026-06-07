@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Config holds runtime configuration read from the environment (.env locally,
@@ -24,6 +25,11 @@ type Config struct {
 	// Local-only demo controls (Test Console + auto-remediation pipeline).
 	EnableTestConsole bool   // ENABLE_TEST_CONSOLE — gates demo controls; OFF in the hosted product
 	DemoAppURL        string // DEMO_APP_URL (default http://localhost:9090)
+
+	// Slack notifications (optional). When SlackWebhookURL is set, a background
+	// poller posts a consolidated digest of active bugs.
+	SlackWebhookURL   string        // SLACK_WEBHOOK_URL (secret; never committed)
+	SlackPollInterval time.Duration // SLACK_POLL_INTERVAL (default 60s)
 }
 
 // LoadConfig loads .env (best-effort) then reads configuration from the environment.
@@ -45,7 +51,17 @@ func LoadConfig() Config {
 
 		EnableTestConsole: os.Getenv("ENABLE_TEST_CONSOLE") == "true",
 		DemoAppURL:        env("DEMO_APP_URL", "http://localhost:9090"),
+
+		SlackWebhookURL:   os.Getenv("SLACK_WEBHOOK_URL"),
+		SlackPollInterval: parseDuration(env("SLACK_POLL_INTERVAL", "60s"), 60*time.Second),
 	}
+}
+
+func parseDuration(s string, def time.Duration) time.Duration {
+	if d, err := time.ParseDuration(s); err == nil && d > 0 {
+		return d
+	}
+	return def
 }
 
 func env(key, def string) string {

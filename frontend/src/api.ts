@@ -4,6 +4,8 @@
 import type {
   ApproveResult,
   AskResult,
+  HistoryEntry,
+  HistoryResponse,
   Investigation,
   PipelineOptions,
   PipelineResult,
@@ -67,6 +69,16 @@ export async function ask(problemId: string, question: string): Promise<AskResul
     method: "POST",
     body: JSON.stringify({ problemId, question }),
   });
+}
+
+// Audit log of proposed patches, approvals, and pipeline runs (hosted-safe).
+export async function listHistory(): Promise<HistoryEntry[]> {
+  try {
+    return (await real<HistoryResponse>("/api/history")).entries ?? [];
+  } catch {
+    usedMock = true;
+    return [];
+  }
 }
 
 // --- Test Console (only responds when the backend has ENABLE_TEST_CONSOLE) ---
@@ -137,8 +149,9 @@ export async function investigateStream(
 
 // remediate: streams pipeline stages, resolves with the PipelineResult.
 export async function remediate(
+  problemId: string,
   options: PipelineOptions,
   onStep: (s: Step) => void,
 ): Promise<PipelineResult> {
-  return consumeSSE<PipelineResult>("/api/remediate", { options }, onStep);
+  return consumeSSE<PipelineResult>("/api/remediate", { problemId, options }, onStep);
 }

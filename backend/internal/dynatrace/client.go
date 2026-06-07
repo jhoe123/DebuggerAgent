@@ -55,33 +55,80 @@ func (c *Client) executeDQLMeta(ctx context.Context, dql string) ([]map[string]a
 	return meta.Records, meta.ScannedBytes, nil
 }
 
-// ListProblems summarizes recent error spans into a problem list for the UI.
+// perfThresholdNs is the p95 duration above which an operation is flagged as a
+// performance problem. Grail span duration is in NANOSECONDS, so 500ms = 5e8 ns.
+const perfThresholdNs = 500_000_000
+
+// ListProblems summarizes recent error spans AND slow operations into one problem
+// list for the UI. Each problem is tagged Kind ("error"|"performance"); its ID is a
+// composite "<kind>:<service>" so error and perf problems on the same service don't
+// collide (the server's prompt builder splits it back apart).
 func (c *Client) ListProblems(ctx context.Context) ([]api.Problem, error) {
-	const dql = `fetch spans, from:now()-30d
+	const errorDQL = `fetch spans, from:now()-30d
 | filter span.status_code == "error"
 | summarize count = count(), latest = max(start_time), by:{service.name, span.name, span.status_message}
 | sort latest desc
 | limit 20`
-	records, scanned, err := c.executeDQLMeta(ctx, dql)
+	const perfDQL = `fetch spans, from:now()-30d
+| filter span.status_code != "error"
+| summarize count = count(), p95 = percentile(duration, 95), latest = max(start_time), by:{service.name, span.name}
+| filter p95 > 500000000
+| sort p95 desc
+| limit 20`
+
+	var problems []api.Problem
+	var scanned int64
+
+	errRecs, errScan, err := c.executeDQLMeta(ctx, errorDQL)
 	if err != nil {
 		return nil, err
 	}
-	problems := make([]api.Problem, 0, len(records))
-	for _, r := range records {
+	scanned += errScan
+	for _, r := range errRecs {
 		svc := str(r["service.name"])
 		count := atoi(str(r["count"]))
 		problems = append(problems, api.Problem{
-			ID:                svc,
-			Title:             str(r["span.status_message"]),
-			Severity:          "ERROR",
-			Status:            "OPEN",
-			AffectedUsers:     count,
-			Occurrences:       count,
-			GrailScannedBytes: scanned,
-			DynatraceURL:      c.env,
-			StartedAt:         str(r["latest"]),
-			Entity:            strings.TrimSpace(svc + " · " + str(r["span.name"])),
+			ID:            "error:" + svc,
+			Kind:          "error",
+			Title:         str(r["span.status_message"]),
+			Severity:      "ERROR",
+			Status:        "OPEN",
+			AffectedUsers: count,
+			Occurrences:   count,
+			DynatraceURL:  c.env,
+			StartedAt:     str(r["latest"]),
+			Entity:        strings.TrimSpace(svc + " · " + str(r["span.name"])),
 		})
+	}
+
+	// Performance problems are best-effort: don't fail the whole list if the perf
+	// query errors (e.g. older tenant lacking percentile()).
+	if perfRecs, perfScan, perfErr := c.executeDQLMeta(ctx, perfDQL); perfErr == nil {
+		scanned += perfScan
+		for _, r := range perfRecs {
+			svc := str(r["service.name"])
+			count := atoi(str(r["count"]))
+			p95ms := int64(atof(str(r["p95"])) / 1e6)
+			span := str(r["span.name"])
+			problems = append(problems, api.Problem{
+				ID:            "performance:" + svc,
+				Kind:          "performance",
+				Title:         "Slow operation: " + span,
+				Severity:      "RESOURCE",
+				Status:        "OPEN",
+				AffectedUsers: count,
+				Occurrences:   count,
+				Metric:        fmt.Sprintf("p95 %d ms", p95ms),
+				DynatraceURL:  c.env,
+				StartedAt:     str(r["latest"]),
+				Entity:        strings.TrimSpace(svc + " · " + span),
+			})
+		}
+	}
+
+	// Stamp the shared Grail scan total on every problem (cost awareness).
+	for i := range problems {
+		problems[i].GrailScannedBytes = scanned
 	}
 	return problems, nil
 }
@@ -98,3 +145,6 @@ func str(v any) string {
 }
 
 func atoi(s string) int { n, _ := strconv.Atoi(s); return n }
+
+// atof parses a numeric value that Grail may return as a number or numeric string.
+func atof(s string) float64 { f, _ := strconv.ParseFloat(strings.TrimSpace(s), 64); return f }

@@ -15,6 +15,10 @@ type Problem struct {
 	Occurrences       int    `json:"occurrences,omitempty"`
 	GrailScannedBytes int64  `json:"grailScannedBytes,omitempty"`
 	DynatraceURL      string `json:"dynatraceUrl,omitempty"`
+
+	// Classification for performance-vs-error problems.
+	Kind   string `json:"kind,omitempty"`   // "error" | "performance"
+	Metric string `json:"metric,omitempty"` // e.g. "p95 612 ms" (performance only)
 }
 
 type CodeLocation struct {
@@ -27,6 +31,11 @@ type RootCause struct {
 	Where  CodeLocation `json:"where"`
 	Why    string       `json:"why"`
 	Impact string       `json:"impact"`
+
+	// Layered detail: a plain-language TL;DR anyone can grasp, plus an optional
+	// deeper technical explanation for further reading. Both optional/back-compat.
+	Summary string `json:"summary,omitempty"`
+	Details string `json:"details,omitempty"`
 }
 
 type ProposedPatch struct {
@@ -58,8 +67,31 @@ type Step struct {
 
 // PipelineResult is the terminal result of an auto-remediation run.
 type PipelineResult struct {
-	Steps   []Step `json:"steps"`
-	Success bool   `json:"success"`
+	Steps   []Step   `json:"steps"`
+	Success bool     `json:"success"`
+	Files   []string `json:"files,omitempty"`  // source files the pipeline touched
+	Verify  string   `json:"verify,omitempty"` // before→after, e.g. "500 -> 400"
+}
+
+// HistoryEntry is one audited change: a proposed patch, an approval, or a
+// pipeline run. Surfaced read-only via GET /api/history (hosted-safe).
+type HistoryEntry struct {
+	ID        string   `json:"id"`
+	Kind      string   `json:"kind"`      // "proposed" | "approved" | "pipeline"
+	ProblemID string   `json:"problemId,omitempty"`
+	Files     []string `json:"files"`     // affected file paths
+	Summary   string   `json:"summary"`   // short human-readable line
+	Status    string   `json:"status"`    // "proposed" | "written" | "success" | "failed"
+	CreatedAt string   `json:"createdAt"` // RFC3339
+	Diff      string   `json:"diff,omitempty"`      // proposed/approved
+	Steps     []Step   `json:"steps,omitempty"`     // pipeline
+	WrittenTo string   `json:"writtenTo,omitempty"` // approved
+	Verify    string   `json:"verify,omitempty"`    // pipeline, e.g. "500 -> 400"
+}
+
+// HistoryResponse is the GET /api/history payload (newest first).
+type HistoryResponse struct {
+	Entries []HistoryEntry `json:"entries"`
 }
 
 // TestStatus is the Test Console status snapshot (local only).

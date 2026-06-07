@@ -20,12 +20,15 @@ import (
 	"github.com/debuggeragent/backend/internal/api"
 	"github.com/debuggeragent/backend/internal/democtl"
 	"github.com/debuggeragent/backend/internal/dynatrace"
+	"github.com/debuggeragent/backend/internal/history"
+	"github.com/debuggeragent/backend/internal/slack"
 )
 
 type handlers struct {
 	agent *agent.Service
 	dt    *dynatrace.Client
 	demo  *democtl.Controller // nil unless ENABLE_TEST_CONSOLE=true (local only)
+	hist  *history.Store
 }
 
 func main() {
@@ -54,7 +57,14 @@ func main() {
 			log.Printf("Test Console + auto-remediation ENABLED (backend owns demo_app at %s)", cfg.DemoAppURL)
 		}
 	}
-	h := &handlers{agent: svc, dt: dt, demo: demo}
+	h := &handlers{agent: svc, dt: dt, demo: demo, hist: history.New(200, cfg.PatchOutputDir)}
+
+	// Slack: background poller posting a consolidated digest of active bugs.
+	if n := slack.New(cfg.SlackWebhookURL); n != nil && dt != nil {
+		go n.Run(ctx, cfg.SlackPollInterval, dt.ListProblems)
+	} else if cfg.SlackWebhookURL != "" && dt == nil {
+		log.Printf("WARNING: SLACK_WEBHOOK_URL set but Dynatrace unavailable — Slack disabled")
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +75,7 @@ func main() {
 	mux.HandleFunc("POST /api/investigate/stream", h.investigateStream)
 	mux.HandleFunc("POST /api/approve-patch", h.approvePatch)
 	mux.HandleFunc("POST /api/ask", h.ask)
+	mux.HandleFunc("GET /api/history", h.history) // audit log (hosted-safe)
 
 	if cfg.EnableTestConsole {
 		mux.HandleFunc("GET /api/test/status", h.testStatus)
@@ -121,20 +132,61 @@ func (h *handlers) investigate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error(), "raw": final})
 		return
 	}
+	h.recordProposed(req.ProblemID, inv)
 	writeJSON(w, http.StatusOK, inv)
 }
 
+// recordProposed logs the agent's proposed patch to the audit history.
+func (h *handlers) recordProposed(problemID string, inv api.Investigation) {
+	if inv.ProposedPatch.File == "" {
+		return
+	}
+	h.hist.RecordProposed(problemID, inv.ProposedPatch.File, inv.ProposedPatch.UnifiedDiff, inv.ProposedPatch.Rationale)
+}
+
+// history returns the audit log (newest first). Read-only and hosted-safe.
+func (h *handlers) history(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, api.HistoryResponse{Entries: h.hist.List()})
+}
+
 func (h *handlers) approvePatch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProblemID string `json:"problemId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
 	path, err := h.agent.Patches().ApplyApproved()
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if prop := h.agent.Patches().Latest(); prop != nil {
+		h.hist.RecordApproved(req.ProblemID, prop.File, prop.UnifiedDiff, path)
+	}
 	writeJSON(w, http.StatusOK, api.ApproveResult{WrittenTo: path})
 }
 
+// splitProblemID parses a composite "<kind>:<service>" problem ID. IDs without a
+// recognized prefix default to the error scenario (backward compatible).
+func splitProblemID(id string) (kind, svc string) {
+	if k, s, ok := strings.Cut(id, ":"); ok && (k == "error" || k == "performance") {
+		return k, s
+	}
+	return "error", id
+}
+
 func investigatePrompt(problemID string) string {
-	return "Investigate the production errors for the Dynatrace service \"" + problemID +
+	kind, svc := splitProblemID(problemID)
+	if kind == "performance" {
+		return "Investigate the PERFORMANCE problem for the Dynatrace service \"" + svc +
+			"\". Find the slowest operation: ONE execute_dql like `fetch spans, from:now()-30d | " +
+			"filter service.name == \"" + svc + "\" and span.status_code != \"error\" | summarize " +
+			"p95 = percentile(duration, 95), c = count(), by:{span.name} | sort p95 desc | limit 1` " +
+			"(duration is in nanoseconds). Read the source for that operation, find the code that makes " +
+			"it slow, call propose_patch with an optimization (change ONLY that function; keep the rest of " +
+			"the file byte-identical), then return the final JSON object. rootCause.what should name the " +
+			"slow operation and the cause; suggestedTest should assert the latency is now under budget."
+	}
+	return "Investigate the production errors for the Dynatrace service \"" + svc +
 		"\". Query its recent error spans, read the offending source file, determine the root cause, " +
 		"call propose_patch with a fix, then return the final JSON object."
 }
@@ -170,6 +222,7 @@ func (h *handlers) investigateStream(w http.ResponseWriter, r *http.Request) {
 		sse.event("error", map[string]string{"error": err.Error(), "raw": final})
 		return
 	}
+	h.recordProposed(req.ProblemID, inv)
 	sse.step(api.Step{Stage: "investigate", Status: "ok", Message: "Root cause identified"})
 	sse.event("result", inv)
 }
@@ -221,7 +274,8 @@ func (h *handlers) testReset(w http.ResponseWriter, r *http.Request) {
 // remediate runs the auto-remediation pipeline, streaming each stage (SSE) then a result event.
 func (h *handlers) remediate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Options *democtl.Options `json:"options"`
+		ProblemID string           `json:"problemId"`
+		Options   *democtl.Options `json:"options"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	opts := democtl.Options{Apply: true, Test: true, Build: true, Deploy: true}
@@ -236,6 +290,7 @@ func (h *handlers) remediate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 	defer cancel()
 	result := h.demo.Remediate(ctx, opts, func(s api.Step) { sse.step(s) })
+	h.hist.RecordPipeline(req.ProblemID, result)
 	sse.event("result", result)
 }
 

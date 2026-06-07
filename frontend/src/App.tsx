@@ -6,6 +6,7 @@ import { InvestigationPanel } from "./components/Investigation";
 import { AgentSteps } from "./components/AgentSteps";
 import { TestConsole } from "./components/TestConsole";
 import { Pipeline } from "./components/Pipeline";
+import { History } from "./components/History";
 
 export function App() {
   const [problems, setProblems] = useState<Problem[]>([]);
@@ -15,6 +16,8 @@ export function App() {
   const [investigating, setInvestigating] = useState(false);
   const [mock, setMock] = useState(false);
   const [consoleAvailable, setConsoleAvailable] = useState(false);
+  const [historyKey, setHistoryKey] = useState(0);
+  const reloadHistory = () => setHistoryKey((k) => k + 1);
 
   async function refreshProblems() {
     const p = await listProblems();
@@ -44,6 +47,7 @@ export function App() {
       const inv = await investigateStream(selectedId, (s) => setSteps((prev) => [...prev, s]));
       setResult(inv);
       setMock(wasMock());
+      reloadHistory();
     } finally {
       setInvestigating(false);
     }
@@ -83,10 +87,16 @@ export function App() {
 
           {result && (
             <>
-              <InvestigationPanel data={result} />
-              <Pipeline available={consoleAvailable} />
+              <InvestigationPanel data={result} onApproved={reloadHistory} />
+              <Pipeline
+                available={consoleAvailable}
+                problemId={result.problemId}
+                onComplete={reloadHistory}
+              />
             </>
           )}
+
+          <History reloadKey={historyKey} />
         </main>
       </div>
     </div>

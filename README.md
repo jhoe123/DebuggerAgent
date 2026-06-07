@@ -117,6 +117,36 @@ cd frontend && npm run dev
 The UI then shows the Test Console + an auto-remediation panel (autonomy toggle + per-stage
 checkboxes) with a live Apply→Test→Build→Deploy→Verify stream.
 
+## Performance monitoring (not just errors)
+
+The agent surfaces **two kinds** of Dynatrace problems: `error` (exception spans) and
+`performance` (operations whose **p95 span duration** exceeds a threshold). `ListProblems` runs an
+error DQL and a latency DQL (`percentile(duration, 95)`), tagging each problem with a `kind` and a
+`metric` chip (e.g. `p95 657 ms`). Investigating a performance problem routes the agent to a
+latency query + an optimization patch (instead of an exception trace + bounds-check), and the
+auto-remediation pipeline verifies the **latency dropped** (gated on a latency regression test).
+The bundled `demo_app` ships a seeded slow endpoint (`/report`, ~657 ms) alongside the buggy
+`/checkout` so both scenarios can be demoed.
+
+## Patch & change history
+
+Every proposed patch, human approval, and pipeline run is recorded in an audit log (with the
+**affected files** and, for pipelines, the before→after verify like `500 -> 400`). The UI shows it
+under **Patch & change history**; the data comes from `GET /api/history` (read-only, always on,
+hosted-safe). Storage is an in-memory ring buffer with best-effort append to
+`<PATCH_OUTPUT_DIR>/history.jsonl` (note: Cloud Run `/tmp` is ephemeral).
+
+## Slack notifications (optional)
+
+Set `SLACK_WEBHOOK_URL` (a Slack Incoming Webhook) and a background poller posts a single,
+**consolidated rolling digest** of all active bugs — re-posted only when the bug set changes, so
+recurring occurrences don't spam the channel. Tune the cadence with `SLACK_POLL_INTERVAL` (default
+`60s`). The webhook is a **secret**: keep it in `.env` (gitignored) or pass it via Secret Manager
+on Cloud Run — never commit it.
+
+> Cloud Run scales to zero, so the poller only runs while an instance is warm. For a reliable live
+> demo, run the backend locally with the webhook set, or deploy with `--min-instances=1`.
+
 ## Deploy (Cloud Run)
 
 The root `Dockerfile` ships a Node 24 runtime (to run the Dynatrace MCP server) plus the Go
