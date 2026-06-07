@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -17,12 +18,14 @@ import (
 
 	"github.com/debuggeragent/backend/internal/agent"
 	"github.com/debuggeragent/backend/internal/api"
+	"github.com/debuggeragent/backend/internal/democtl"
 	"github.com/debuggeragent/backend/internal/dynatrace"
 )
 
 type handlers struct {
 	agent *agent.Service
 	dt    *dynatrace.Client
+	demo  *democtl.Controller // nil unless ENABLE_TEST_CONSOLE=true (local only)
 }
 
 func main() {
@@ -40,7 +43,18 @@ func main() {
 	} else {
 		defer dt.Close()
 	}
-	h := &handlers{agent: svc, dt: dt}
+	// Local-only demo controls (Test Console + auto-remediation pipeline).
+	var demo *democtl.Controller
+	if cfg.EnableTestConsole {
+		demo = democtl.New(cfg.SourceRoot, cfg.DemoAppURL, cfg.DTEnvironment, cfg.DTApiToken, svc.Patches())
+		if err := demo.Start(ctx); err != nil {
+			log.Printf("WARNING: demo controller start: %v", err)
+		} else {
+			defer demo.Stop()
+			log.Printf("Test Console + auto-remediation ENABLED (backend owns demo_app at %s)", cfg.DemoAppURL)
+		}
+	}
+	h := &handlers{agent: svc, dt: dt, demo: demo}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -48,7 +62,16 @@ func main() {
 	})
 	mux.HandleFunc("GET /api/problems", h.problems)
 	mux.HandleFunc("POST /api/investigate", h.investigate)
+	mux.HandleFunc("POST /api/investigate/stream", h.investigateStream)
 	mux.HandleFunc("POST /api/approve-patch", h.approvePatch)
+	mux.HandleFunc("POST /api/ask", h.ask)
+
+	if cfg.EnableTestConsole {
+		mux.HandleFunc("GET /api/test/status", h.testStatus)
+		mux.HandleFunc("POST /api/test/trigger", h.testTrigger)
+		mux.HandleFunc("POST /api/test/reset", h.testReset)
+		mux.HandleFunc("POST /api/remediate", h.remediate)
+	}
 
 	// Optional: serve the built React app (Cloud Run). Dev uses the Vite server.
 	if webDir := os.Getenv("WEB_DIR"); webDir != "" {
@@ -87,10 +110,7 @@ func (h *handlers) investigate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
 	defer cancel()
 
-	prompt := "Investigate the production errors for the Dynatrace service \"" + req.ProblemID +
-		"\". Query its recent error spans, read the offending source file, determine the root cause, " +
-		"call propose_patch with a fix, then return the final JSON object."
-	final, _, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, prompt, nil)
+	final, _, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, investigatePrompt(req.ProblemID), nil)
 	if err != nil {
 		log.Printf("investigate %q error: %v", req.ProblemID, err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -111,6 +131,112 @@ func (h *handlers) approvePatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, api.ApproveResult{WrittenTo: path})
+}
+
+func investigatePrompt(problemID string) string {
+	return "Investigate the production errors for the Dynatrace service \"" + problemID +
+		"\". Query its recent error spans, read the offending source file, determine the root cause, " +
+		"call propose_patch with a fix, then return the final JSON object."
+}
+
+// investigateStream runs the agent and streams step milestones (SSE), then a final result event.
+func (h *handlers) investigateStream(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProblemID string `json:"problemId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.ProblemID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "problemId required"})
+		return
+	}
+	sse, ok := newSSE(w)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
+	defer cancel()
+
+	sse.step(api.Step{Stage: "investigate", Status: "running", Message: "Starting investigation…"})
+	onStep := func(stage, status, message string) { sse.step(api.Step{Stage: stage, Status: status, Message: message}) }
+	final, _, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, investigatePrompt(req.ProblemID), onStep)
+	if err != nil {
+		log.Printf("investigate(stream) %q error: %v", req.ProblemID, err)
+		sse.event("error", map[string]string{"error": err.Error()})
+		return
+	}
+	inv, err := parseInvestigation(final, req.ProblemID)
+	if err != nil {
+		sse.event("error", map[string]string{"error": err.Error(), "raw": final})
+		return
+	}
+	sse.step(api.Step{Stage: "investigate", Status: "ok", Message: "Root cause identified"})
+	sse.event("result", inv)
+}
+
+func (h *handlers) ask(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProblemID string `json:"problemId"`
+		Question  string `json:"question"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.Question == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "question required"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	answer, err := h.agent.Ask(ctx, "sess-"+req.ProblemID, req.Question)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, api.AskResult{Answer: strings.TrimSpace(answer)})
+}
+
+// --- Test Console + pipeline (registered only when ENABLE_TEST_CONSOLE=true) ---
+
+func (h *handlers) testStatus(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	writeJSON(w, http.StatusOK, h.demo.Status(ctx))
+}
+
+func (h *handlers) testTrigger(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	writeJSON(w, http.StatusOK, h.demo.Trigger(ctx, 5))
+}
+
+func (h *handlers) testReset(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	if err := h.demo.ResetSource(ctx); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, h.demo.Status(ctx))
+}
+
+// remediate runs the auto-remediation pipeline, streaming each stage (SSE) then a result event.
+func (h *handlers) remediate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Options *democtl.Options `json:"options"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	opts := democtl.Options{Apply: true, Test: true, Build: true, Deploy: true}
+	if req.Options != nil {
+		opts = *req.Options
+	}
+	sse, ok := newSSE(w)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	result := h.demo.Remediate(ctx, opts, func(s api.Step) { sse.step(s) })
+	sse.event("result", result)
 }
 
 // parseInvestigation extracts the JSON object from the agent's final text.
@@ -142,6 +268,33 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+// sseStream writes Server-Sent Events.
+type sseStream struct {
+	w http.ResponseWriter
+	f http.Flusher
+}
+
+func newSSE(w http.ResponseWriter) (*sseStream, bool) {
+	f, ok := w.(http.Flusher)
+	if !ok {
+		return nil, false
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	f.Flush()
+	return &sseStream{w: w, f: f}, true
+}
+
+func (s *sseStream) event(name string, v any) {
+	b, _ := json.Marshal(v)
+	fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", name, b)
+	s.f.Flush()
+}
+
+func (s *sseStream) step(st api.Step) { s.event("step", st) }
 
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -141,34 +141,57 @@ func (s *Service) Patches() *tools.PatchStore { return s.patches }
 
 // Investigate runs the agent. It streams text chunks to onText (for SSE) and
 // returns the final aggregated text plus the proposed patch (if any).
-func (s *Service) Investigate(ctx context.Context, sessionID, prompt string, onText func(string)) (string, *tools.PatchProposal, error) {
-	msg := genai.NewContentFromText(prompt, genai.RoleUser)
+// StepFunc receives live milestones during a run (for SSE streaming).
+type StepFunc func(stage, status, message string)
+
+// Investigate runs the agent and returns the final text + the proposed patch.
+// onStep (optional) receives live milestones derived from the agent's tool calls.
+func (s *Service) Investigate(ctx context.Context, sessionID, prompt string, onStep StepFunc) (string, *tools.PatchProposal, error) {
+	final, err := s.run(ctx, sessionID, prompt, onStep)
+	return final, s.patches.Latest(), err
+}
+
+// Ask runs a free-form follow-up question in the same session (prose answer).
+func (s *Service) Ask(ctx context.Context, sessionID, question string) (string, error) {
+	return s.run(ctx, sessionID, question, nil)
+}
+
+func (s *Service) run(ctx context.Context, sessionID, userMsg string, onStep StepFunc) (string, error) {
+	msg := genai.NewContentFromText(userMsg, genai.RoleUser)
 	var final strings.Builder
 	for ev, err := range s.runner.Run(ctx, "judge", sessionID, msg, adkagent.RunConfig{}) {
 		if err != nil {
-			return final.String(), s.patches.Latest(), err
+			return final.String(), err
 		}
-		if txt := eventText(ev); txt != "" {
-			final.WriteString(txt)
-			if onText != nil {
-				onText(txt)
+		if ev == nil || ev.Content == nil {
+			continue
+		}
+		for _, p := range ev.Content.Parts {
+			if p == nil {
+				continue
+			}
+			if p.Text != "" {
+				final.WriteString(p.Text)
+			}
+			if p.FunctionCall != nil && onStep != nil {
+				onStep("tool", "running", toolMessage(p.FunctionCall.Name))
 			}
 		}
 	}
-	return final.String(), s.patches.Latest(), nil
+	return final.String(), nil
 }
 
-func eventText(ev *session.Event) string {
-	if ev == nil || ev.Content == nil {
-		return ""
+func toolMessage(name string) string {
+	switch name {
+	case "execute_dql":
+		return "Querying Dynatrace spans…"
+	case "read_source":
+		return "Reading the source file…"
+	case "propose_patch":
+		return "Proposing a fix…"
+	default:
+		return "Calling " + name + "…"
 	}
-	var b strings.Builder
-	for _, p := range ev.Content.Parts {
-		if p != nil && p.Text != "" {
-			b.WriteString(p.Text)
-		}
-	}
-	return b.String()
 }
 
 const systemPrompt = `You are DebuggerAgent, an SRE/debugging assistant that investigates
@@ -194,4 +217,8 @@ exact steps once each, in order:
   "proposedPatch": {"file": "main.go", "unifiedDiff": "--- a/main.go\n+++ b/main.go\n...", "rationale": "..."},
   "suggestedTest": "..."
 }
-confidence is your 0..1 confidence in the root cause. Keep strings concise.`
+confidence is your 0..1 confidence in the root cause. Keep strings concise.
+
+If instead the user asks a plain FOLLOW-UP QUESTION (not an investigation request), answer
+concisely in 1–3 sentences of prose (you may use execute_dql to check the data); in that case do
+NOT output the JSON object.`

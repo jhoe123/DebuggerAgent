@@ -61,6 +61,13 @@ func (p *PatchStore) Latest() *PatchProposal {
 	return p.latest
 }
 
+// Clear discards any pending proposal (used by the Test Console reset).
+func (p *PatchStore) Clear() {
+	p.mu.Lock()
+	p.latest = nil
+	p.mu.Unlock()
+}
+
 // ApplyApproved writes the approved patch (new file content + a .diff) under the
 // output directory, mirroring the source-relative path. It returns the path
 // written. It deliberately does not touch the source tree or deploy anything.

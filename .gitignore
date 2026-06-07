@@ -31,3 +31,6 @@ Thumbs.db
 
 # Agent-written patches (generated on approval)
 /.patches/
+
+# Personal submission guide (local only — not for the public repo)
+/SUBMISSION.md

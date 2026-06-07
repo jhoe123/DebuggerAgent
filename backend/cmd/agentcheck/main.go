@@ -26,7 +26,7 @@ func main() {
 	prompt := `Use your Dynatrace tools to list the current open problems in the environment.
 Do NOT call propose_patch. Reply with a one-line summary: how many problems, and the title of the most recent one (or "NONE" if there are no open problems).`
 
-	final, _, err := svc.Investigate(ctx, "smoke", prompt, func(s string) { fmt.Print(s) })
+	final, _, err := svc.Investigate(ctx, "smoke", prompt, nil)
 	if err != nil {
 		log.Fatalf("\ninvestigate: %v", err)
 	}

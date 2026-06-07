@@ -10,6 +10,11 @@ type Problem struct {
 	AffectedUsers int    `json:"affectedUsers"`
 	StartedAt     string `json:"startedAt"`
 	Entity        string `json:"entity"`
+
+	// Richer Dynatrace context.
+	Occurrences       int    `json:"occurrences,omitempty"`
+	GrailScannedBytes int64  `json:"grailScannedBytes,omitempty"`
+	DynatraceURL      string `json:"dynatraceUrl,omitempty"`
 }
 
 type CodeLocation struct {
@@ -41,4 +46,37 @@ type Investigation struct {
 
 type ApproveResult struct {
 	WrittenTo string `json:"writtenTo"`
+}
+
+// Step is a single milestone in a live stream (agent reasoning or a pipeline stage).
+type Step struct {
+	Stage   string `json:"stage"`            // investigate | apply | test | build | deploy | verify
+	Status  string `json:"status"`           // running | ok | fail | info
+	Message string `json:"message"`          // short human-readable line
+	Detail  string `json:"detail,omitempty"` // optional logs/output
+}
+
+// PipelineResult is the terminal result of an auto-remediation run.
+type PipelineResult struct {
+	Steps   []Step `json:"steps"`
+	Success bool   `json:"success"`
+}
+
+// TestStatus is the Test Console status snapshot (local only).
+type TestStatus struct {
+	SourceState  string `json:"sourceState"` // "buggy" | "modified"
+	Reachable    bool   `json:"reachable"`   // demo_app responding on /healthz
+	PendingPatch bool   `json:"pendingPatch"`
+	DemoAppURL   string `json:"demoAppUrl"`
+}
+
+// TriggerResult reports the outcome of firing demo requests.
+type TriggerResult struct {
+	Sent  int   `json:"sent"`
+	Codes []int `json:"codes"`
+}
+
+// AskResult is the answer to a natural-language follow-up question.
+type AskResult struct {
+	Answer string `json:"answer"`
 }

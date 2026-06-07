@@ -15,10 +15,15 @@ type Config struct {
 	GCPLocation    string // GOOGLE_CLOUD_LOCATION (Gemini 3.x → "global")
 	DTEnvironment  string // DT_ENVIRONMENT
 	DTPlatformTok  string // DT_PLATFORM_TOKEN
+	DTApiToken     string // DT_API_TOKEN (OTLP ingest, used when the backend owns demo_app)
 	MCPNodeBin     string // MCP_NODE_BIN — node.exe used to run the Dynatrace MCP server
 	SourceRoot     string // SOURCE_ROOT (read_source sandbox)
 	PatchOutputDir string // PATCH_OUTPUT_DIR (approved patches)
 	Port           string // PORT
+
+	// Local-only demo controls (Test Console + auto-remediation pipeline).
+	EnableTestConsole bool   // ENABLE_TEST_CONSOLE — gates demo controls; OFF in the hosted product
+	DemoAppURL        string // DEMO_APP_URL (default http://localhost:9090)
 }
 
 // LoadConfig loads .env (best-effort) then reads configuration from the environment.
@@ -32,10 +37,14 @@ func LoadConfig() Config {
 		GCPLocation:    env("GOOGLE_CLOUD_LOCATION", "global"),
 		DTEnvironment:  os.Getenv("DT_ENVIRONMENT"),
 		DTPlatformTok:  os.Getenv("DT_PLATFORM_TOKEN"),
+		DTApiToken:     os.Getenv("DT_API_TOKEN"),
 		MCPNodeBin:     os.Getenv("MCP_NODE_BIN"),
 		SourceRoot:     resolveRel(baseDir, env("SOURCE_ROOT", "./demo_app")),
 		PatchOutputDir: resolveRel(baseDir, env("PATCH_OUTPUT_DIR", "./.patches")),
 		Port:           env("PORT", "8080"),
+
+		EnableTestConsole: os.Getenv("ENABLE_TEST_CONSOLE") == "true",
+		DemoAppURL:        env("DEMO_APP_URL", "http://localhost:9090"),
 	}
 }
 
