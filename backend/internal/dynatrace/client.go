@@ -49,7 +49,7 @@ func (c *Client) ExecuteDQL(ctx context.Context, dql string) ([]map[string]any, 
 
 // ListProblems summarizes recent error spans into a problem list for the UI.
 func (c *Client) ListProblems(ctx context.Context) ([]api.Problem, error) {
-	const dql = `fetch spans, from:now()-24h
+	const dql = `fetch spans, from:now()-30d
 | filter span.status_code == "error"
 | summarize count = count(), latest = max(start_time), by:{service.name, span.name, span.status_message}
 | sort latest desc

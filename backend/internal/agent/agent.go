@@ -179,7 +179,7 @@ Be efficient: make the MINIMUM number of tool calls. Do not call tools you don't
 exact steps once each, in order:
 
 1. ONE execute_dql call to get the failing span + its exception:
-   fetch spans, from:now()-24h | filter service.name == "<svc>" and span.status_code == "error"
+   fetch spans, from:now()-30d | filter service.name == "<svc>" and span.status_code == "error"
    | fields span.name, span.status_message, span.events | sort timestamp desc | limit 1
    The span.events array contains exception.message and exception.stack_trace.
 2. ONE read_source call for the file named in the stack trace. The path is RELATIVE to the
