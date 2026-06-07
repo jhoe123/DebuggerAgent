@@ -206,6 +206,47 @@ code { background: var(--panel-2); padding: 0.1rem 0.35rem; border-radius: 4px; 
 .qa-input button { background: var(--accent); color: #04101f; border: none; border-radius: 6px; padding: 0.5rem 0.9rem; font-weight: 700; cursor: pointer; }
 .qa-input button:disabled { opacity: 0.6; cursor: default; }
 
+/* Auto-Instrument panel */
+.instrument { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.instrument-header { display: flex; align-items: center; gap: 0.6rem; }
+.instrument-header h3 { margin: 0; }
+.instrument > .investigate-btn { margin: 0.6rem 0; }
+
+.candidate-toolbar { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin: 0.8rem 0 0.5rem; }
+.kind-select, .candidate-search {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0.3rem 0.5rem; font-size: 0.82rem;
+}
+.candidate-search { flex: 1; min-width: 140px; }
+.truncated-note { font-size: 0.8rem; margin: 0.2rem 0 0.5rem; }
+
+.candidate-list { margin: 0.3rem 0 0.8rem; }
+.candidate-group { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 0.6rem; overflow: hidden; }
+.candidate-group-header { display: flex; align-items: center; gap: 0.5rem; padding: 0.45rem 0.7rem; background: var(--panel-2); cursor: pointer; }
+.candidate-group-header code { background: transparent; padding: 0; }
+.candidate-group-header .ghost-btn { margin-left: auto; }
+.cg-toggle { color: var(--muted); width: 1rem; }
+
+.candidate-item { border-top: 1px solid var(--border); padding: 0.45rem 0.7rem; }
+.candidate-row { display: flex; align-items: baseline; gap: 0.5rem; cursor: pointer; }
+.candidate-row input { margin-top: 0.2rem; }
+.candidate-loc { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; color: var(--text); white-space: nowrap; }
+.candidate-rationale { color: var(--muted); font-size: 0.85rem; line-height: 1.4; }
+.candidate-diff { margin: 0.4rem 0 0.1rem 1.5rem; }
+.candidate-diff .ghost-btn { font-size: 0.75rem; }
+.candidate-diff .diff { margin-top: 0.4rem; }
+
+.kind-badge { font-size: 0.66rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px; letter-spacing: 0.03em; white-space: nowrap; text-transform: uppercase; }
+.kind-span { background: #1e2f4a; color: #79c0ff; }
+.kind-record-error { background: #4a1e1e; color: #ff7b72; }
+.kind-attributes { background: #16331f; color: #56d364; }
+.kind-tracer-init { background: #2d2438; color: #d2a8ff; }
+.kind-otel-bootstrap { background: #3a2a12; color: #e3b341; }
+.kind-metric { background: #122d33; color: #56d4c8; }
+
+.candidate-actions { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.6rem; }
+.candidate-actions .run-btn { margin-left: 0; }
+
 @media (max-width: 760px) {
   .layout { grid-template-columns: 1fr; }
 }

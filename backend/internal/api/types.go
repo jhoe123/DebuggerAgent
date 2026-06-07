@@ -57,6 +57,32 @@ type ApproveResult struct {
 	WrittenTo string `json:"writtenTo"`
 }
 
+// InstrumentationCandidate is one place the agent recommends adding Dynatrace /
+// OpenTelemetry telemetry. Kind is one of:
+// otel-bootstrap | tracer-init | span | record-error | attributes | metric.
+// UnifiedDiff is a small display hunk only — the FULL patched file content is
+// generated at apply time (keeps a scan's payload lean for long candidate lists).
+type InstrumentationCandidate struct {
+	ID          string `json:"id"`                    // stable id assigned by the backend
+	File        string `json:"file"`                  // path relative to the source root
+	Symbol      string `json:"symbol,omitempty"`      // function/handler the edit targets
+	StartLine   int    `json:"startLine"`             // 1-based anchor line
+	EndLine     int    `json:"endLine,omitempty"`     // inclusive end of the affected region
+	Kind        string `json:"kind"`                  // see above
+	Rationale   string `json:"rationale"`             // why this telemetry matters
+	Snippet     string `json:"snippet,omitempty"`     // a few lines of context where it lands
+	UnifiedDiff string `json:"unifiedDiff,omitempty"` // small display hunk
+}
+
+// InstrumentationScan is the result of a (read-only) instrumentation review.
+// Truncated flags that the scan was capped (long candidate-list management).
+type InstrumentationScan struct {
+	Root       string                     `json:"root"`
+	Summary    string                     `json:"summary"`
+	Candidates []InstrumentationCandidate `json:"candidates"`
+	Truncated  bool                       `json:"truncated,omitempty"`
+}
+
 // Step is a single milestone in a live stream (agent reasoning or a pipeline stage).
 type Step struct {
 	Stage   string `json:"stage"`            // investigate | apply | test | build | deploy | verify
@@ -77,12 +103,12 @@ type PipelineResult struct {
 // pipeline run. Surfaced read-only via GET /api/history (hosted-safe).
 type HistoryEntry struct {
 	ID        string   `json:"id"`
-	Kind      string   `json:"kind"`      // "proposed" | "approved" | "pipeline"
+	Kind      string   `json:"kind"` // "proposed" | "approved" | "pipeline" | "scan"
 	ProblemID string   `json:"problemId,omitempty"`
-	Files     []string `json:"files"`     // affected file paths
-	Summary   string   `json:"summary"`   // short human-readable line
-	Status    string   `json:"status"`    // "proposed" | "written" | "success" | "failed"
-	CreatedAt string   `json:"createdAt"` // RFC3339
+	Files     []string `json:"files"`               // affected file paths
+	Summary   string   `json:"summary"`             // short human-readable line
+	Status    string   `json:"status"`              // "proposed" | "written" | "success" | "failed"
+	CreatedAt string   `json:"createdAt"`           // RFC3339
 	Diff      string   `json:"diff,omitempty"`      // proposed/approved
 	Steps     []Step   `json:"steps,omitempty"`     // pipeline
 	WrittenTo string   `json:"writtenTo,omitempty"` // approved

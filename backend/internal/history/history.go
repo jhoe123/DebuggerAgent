@@ -93,6 +93,33 @@ func (s *Store) RecordApproved(problemID, file, diff, writtenTo string) {
 	})
 }
 
+// RecordScan logs an instrumentation scan (read-only review).
+func (s *Store) RecordScan(root, summary string, files []string) {
+	if summary == "" {
+		summary = "instrumentation review"
+	}
+	s.Record(api.HistoryEntry{
+		Kind: "scan", Files: files,
+		Summary: trim("Instrumentation scan: "+summary, 160), Status: "proposed",
+	})
+}
+
+// RecordInstrumentation logs an auto-instrumentation apply pipeline run.
+func (s *Store) RecordInstrumentation(res api.PipelineResult) {
+	status, verb := "failed", "rolled back"
+	if res.Success {
+		status, verb = "success", "applied"
+	}
+	summary := "Auto-instrumentation " + verb
+	if res.Verify != "" {
+		summary += " (" + res.Verify + ")"
+	}
+	s.Record(api.HistoryEntry{
+		Kind: "pipeline", Files: res.Files,
+		Summary: summary, Status: status, Steps: res.Steps, Verify: res.Verify,
+	})
+}
+
 // RecordPipeline logs an auto-remediation pipeline run.
 func (s *Store) RecordPipeline(problemID string, res api.PipelineResult) {
 	status, verb := "failed", "failed"

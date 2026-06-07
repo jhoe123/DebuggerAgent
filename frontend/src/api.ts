@@ -6,6 +6,7 @@ import type {
   AskResult,
   HistoryEntry,
   HistoryResponse,
+  InstrumentationScan,
   Investigation,
   PipelineOptions,
   PipelineResult,
@@ -14,7 +15,7 @@ import type {
   TestStatus,
   TriggerResult,
 } from "./types";
-import { mockInvestigation, mockProblems } from "./mock";
+import { mockInvestigation, mockProblems, mockScan } from "./mock";
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -154,4 +155,29 @@ export async function remediate(
   onStep: (s: Step) => void,
 ): Promise<PipelineResult> {
   return consumeSSE<PipelineResult>("/api/remediate", { problemId, options }, onStep);
+}
+
+// --- Auto-instrumentation (scan is hosted-safe; apply is local-only) ---
+
+// scanInstrumentation: read-only review. Streams agent steps, resolves with the
+// candidate set. Falls back to mock data so the UI is demoable without a backend.
+export async function scanInstrumentation(
+  onStep: (s: Step) => void,
+): Promise<InstrumentationScan> {
+  try {
+    return await consumeSSE<InstrumentationScan>("/api/instrument/scan", {}, onStep);
+  } catch {
+    usedMock = true;
+    return mockScan;
+  }
+}
+
+// applyInstrumentation: apply the selected candidates, then stream the local
+// apply→test→debug→build→deploy→verify pipeline. Local-only (no mock fallback).
+export async function applyInstrumentation(
+  ids: string[],
+  options: PipelineOptions,
+  onStep: (s: Step) => void,
+): Promise<PipelineResult> {
+  return consumeSSE<PipelineResult>("/api/instrument/apply", { ids, options }, onStep);
 }

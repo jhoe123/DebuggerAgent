@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -165,7 +166,12 @@ func (c *Controller) Remediate(ctx context.Context, opts Options, emit func(api.
 	var steps []api.Step
 	var files []string
 	verify := ""
-	step := func(s api.Step) { steps = append(steps, s); if emit != nil { emit(s) } }
+	step := func(s api.Step) {
+		steps = append(steps, s)
+		if emit != nil {
+			emit(s)
+		}
+	}
 	fail := func(stage, msg, detail string) api.PipelineResult {
 		step(api.Step{Stage: stage, Status: "fail", Message: msg, Detail: detail})
 		return api.PipelineResult{Steps: steps, Success: false, Files: files, Verify: verify}
@@ -238,6 +244,169 @@ func (c *Controller) ApplyPatch() error {
 	}
 	dest := filepath.Join(c.demoDir, filepath.Clean(prop.File))
 	return os.WriteFile(dest, []byte(prop.PatchedContent), 0o644)
+}
+
+// RepairFunc regenerates the instrumented files after a failed test/build. It
+// receives the combined error output and returns file -> full content (same shape
+// as the initial apply). Supplied by the server so democtl stays decoupled from
+// the agent package.
+type RepairFunc func(ctx context.Context, errOutput string) (map[string]string, error)
+
+// maxRepairAttempts caps the auto-debug loop before democtl rolls back.
+const maxRepairAttempts = 2
+
+// ApplyInstrumentation writes the supplied instrumented files to demo_app source,
+// then runs test → build → deploy → verify(/healthz). On a test or build failure it
+// asks repair (the agent) to fix the files and retries, up to maxRepairAttempts; if
+// it still can't go green it restores the source via git and reports failure.
+func (c *Controller) ApplyInstrumentation(ctx context.Context, files map[string]string, opts Options, repair RepairFunc, emit func(api.Step)) api.PipelineResult {
+	var steps []api.Step
+	verify := ""
+	step := func(s api.Step) {
+		steps = append(steps, s)
+		if emit != nil {
+			emit(s)
+		}
+	}
+	touched := sortedFileKeys(files)
+	done := func(success bool) api.PipelineResult {
+		return api.PipelineResult{Steps: steps, Success: success, Files: touched, Verify: verify}
+	}
+	rollback := func(stage, msg, detail string) api.PipelineResult {
+		step(api.Step{Stage: stage, Status: "fail", Message: msg, Detail: detail})
+		step(api.Step{Stage: "rollback", Status: "running", Message: "Restoring demo_app source to last committed state"})
+		if err := c.restore(ctx); err != nil {
+			step(api.Step{Stage: "rollback", Status: "fail", Message: "Rollback failed", Detail: err.Error()})
+		} else {
+			step(api.Step{Stage: "rollback", Status: "ok", Message: "Source restored — no changes kept"})
+		}
+		return done(false)
+	}
+
+	if opts.Apply {
+		step(api.Step{Stage: "apply", Status: "running", Message: fmt.Sprintf("Applying instrumentation to %d file(s)", len(files))})
+		if err := c.writeFiles(files); err != nil {
+			return rollback("apply", "Apply failed", err.Error())
+		}
+		step(api.Step{Stage: "apply", Status: "ok", Message: "Instrumentation written: " + strings.Join(touched, ", ")})
+	}
+
+	// Test → build, with an auto-debug repair loop shared across both gates.
+	attempt := 0
+	repairOrRollback := func(stage, out string) (api.PipelineResult, bool) {
+		if attempt >= maxRepairAttempts || repair == nil {
+			return rollback(stage, fmt.Sprintf("%s failed after %d repair attempt(s)", capitalize(stage), attempt), out), false
+		}
+		attempt++
+		step(api.Step{Stage: "debug", Status: "running", Message: fmt.Sprintf("%s failed — agent is repairing the instrumentation (attempt %d/%d)", stage, attempt, maxRepairAttempts)})
+		fixed, err := repair(ctx, out)
+		if err != nil {
+			return rollback("debug", "Auto-debug failed", err.Error()), false
+		}
+		if err := c.writeFiles(fixed); err != nil {
+			return rollback("debug", "Re-apply after repair failed", err.Error()), false
+		}
+		files = fixed
+		touched = sortedFileKeys(files)
+		step(api.Step{Stage: "debug", Status: "ok", Message: "Agent repaired the instrumentation; retrying"})
+		return api.PipelineResult{}, true
+	}
+	for {
+		if opts.Test {
+			step(api.Step{Stage: "test", Status: "running", Message: "Vetting & compiling instrumented code (gate)"})
+			ok, out := c.vet(ctx)
+			if !ok {
+				if rb, retry := repairOrRollback("test", out); !retry {
+					return rb
+				}
+				continue
+			}
+			step(api.Step{Stage: "test", Status: "ok", Message: "Vet & compile passed", Detail: out})
+		}
+		if opts.Build {
+			step(api.Step{Stage: "build", Status: "running", Message: "Building demo_app"})
+			ok, out := c.build(ctx)
+			if !ok {
+				if rb, retry := repairOrRollback("build", out); !retry {
+					return rb
+				}
+				continue
+			}
+			step(api.Step{Stage: "build", Status: "ok", Message: "Build succeeded"})
+		}
+		break
+	}
+
+	if opts.Deploy {
+		step(api.Step{Stage: "deploy", Status: "running", Message: "Restarting demo_app with the instrumentation"})
+		if err := c.launch(); err != nil {
+			return rollback("deploy", "Deploy (restart) failed", err.Error())
+		}
+		time.Sleep(1500 * time.Millisecond) // let it bind the port
+		step(api.Step{Stage: "deploy", Status: "ok", Message: "demo_app restarted"})
+
+		step(api.Step{Stage: "verify", Status: "running", Message: "Verifying /healthz"})
+		code, _ := c.get(ctx, "/healthz")
+		verify = fmt.Sprintf("healthz %d", code)
+		if code == 200 {
+			_, _ = c.get(ctx, "/checkout?index=1") // emit a span so new telemetry flows to Dynatrace
+			step(api.Step{Stage: "verify", Status: "ok", Message: "Healthy — instrumented demo_app is running (HTTP 200 on /healthz)"})
+		} else {
+			return rollback("verify", fmt.Sprintf("Healthcheck failed (HTTP %d)", code), "")
+		}
+	}
+	return done(true)
+}
+
+// writeFiles writes each file (path relative to the source root) into demo_app.
+func (c *Controller) writeFiles(files map[string]string) error {
+	for rel, content := range files {
+		dest := filepath.Join(c.demoDir, filepath.Clean(rel))
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(dest, []byte(content), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// restore reverts demo_app to its last committed state and rebuilds/relaunches it.
+func (c *Controller) restore(ctx context.Context) error {
+	if _, err := c.git(ctx, "checkout", "--", "demo_app"); err != nil {
+		return err
+	}
+	if ok, out := c.build(ctx); !ok {
+		return fmt.Errorf("rebuild after rollback failed: %s", out)
+	}
+	return c.launch()
+}
+
+// vet compiles every package (including test files) and runs go vet's static
+// checks. It is the instrumentation gate: it catches broken AI-generated edits
+// (bad imports, type errors, suspicious constructs) without being blocked by
+// demo_app's deliberately-failing seeded-bug regression tests, which assert FIXED
+// behavior and are out of scope for adding telemetry.
+func (c *Controller) vet(ctx context.Context) (bool, string) {
+	out, err := c.goCmd(ctx, "vet", "./...")
+	return err == nil, out
+}
+
+func sortedFileKeys(files map[string]string) []string {
+	keys := make([]string, 0, len(files))
+	for k := range files {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 // test runs the regression gate scoped to the scenario being remediated, so fixing

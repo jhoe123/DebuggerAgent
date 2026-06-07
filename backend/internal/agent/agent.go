@@ -52,10 +52,35 @@ type proposePatchResult struct {
 	Message string `json:"message"`
 }
 
-// Service wraps the ADK runner and the patch store.
+// Service wraps the ADK runners and the agent's stores. It hosts two agents that
+// share the same model and source sandbox: the investigator (runner/patches) and
+// the instrumenter (instrument/instStore — see instrument.go).
 type Service struct {
 	runner  *runner.Runner
 	patches *tools.PatchStore
+
+	instrument *runner.Runner
+	instStore  *tools.InstrumentStore
+}
+
+// newReadSourceTool builds the read_source FunctionTool over a sandbox. It is
+// shared by both the investigator and the instrumenter agents.
+func newReadSourceTool(sb *tools.Sandbox) (tool.Tool, error) {
+	return functiontool.New(functiontool.Config{
+		Name: "read_source",
+		Description: "Read a source file (path relative to the project root) to correlate a stack trace or error to the responsible code. " +
+			"For large files prefer a WINDOW: pass offset (1-based start line) and limit (number of lines), or query to search for a symbol and get matching regions with context. " +
+			"With no offset/limit/query it returns the whole file when small, otherwise a truncated head — total_lines tells you the file size so you can range further.",
+	}, func(_ tool.Context, args readSourceArgs) (readSourceResult, error) {
+		r, err := sb.ReadSource(args.Path, tools.ReadOptions{Offset: args.Offset, Limit: args.Limit, Query: args.Query})
+		if err != nil {
+			return readSourceResult{}, err
+		}
+		return readSourceResult{
+			Path: r.Path, Content: r.Content, StartLine: r.StartLine, EndLine: r.EndLine,
+			TotalLines: r.TotalLines, Truncated: r.Truncated,
+		}, nil
+	})
 }
 
 // New builds the agent (model + tools + MCP toolset) and its runner.
@@ -78,21 +103,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	patches := tools.NewPatchStore(sb, cfg.PatchOutputDir)
 
-	readTool, err := functiontool.New(functiontool.Config{
-		Name: "read_source",
-		Description: "Read a source file (path relative to the project root) to correlate a stack trace or error to the responsible code. " +
-			"For large files prefer a WINDOW: pass offset (1-based start line) and limit (number of lines), or query to search for a symbol and get matching regions with context. " +
-			"With no offset/limit/query it returns the whole file when small, otherwise a truncated head — total_lines tells you the file size so you can range further.",
-	}, func(_ tool.Context, args readSourceArgs) (readSourceResult, error) {
-		r, err := sb.ReadSource(args.Path, tools.ReadOptions{Offset: args.Offset, Limit: args.Limit, Query: args.Query})
-		if err != nil {
-			return readSourceResult{}, err
-		}
-		return readSourceResult{
-			Path: r.Path, Content: r.Content, StartLine: r.StartLine, EndLine: r.EndLine,
-			TotalLines: r.TotalLines, Truncated: r.Truncated,
-		}, nil
-	})
+	readTool, err := newReadSourceTool(sb)
 	if err != nil {
 		return nil, fmt.Errorf("read_source tool: %w", err)
 	}
@@ -145,7 +156,35 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create runner: %w", err)
 	}
-	return &Service{runner: r, patches: patches}, nil
+
+	// Second agent: the instrumenter (scan source for telemetry gaps + apply edits).
+	// Shares the model and source sandbox; see instrument.go.
+	instStore := tools.NewInstrumentStore(sb)
+	instTools, err := instrumentTools(sb, instStore)
+	if err != nil {
+		return nil, err
+	}
+	instAgent, err := llmagent.New(llmagent.Config{
+		Name:        "instrumenter_agent",
+		Description: "Reviews source code for Dynatrace/OpenTelemetry instrumentation gaps and applies human-selected edits.",
+		Model:       model,
+		Instruction: instrumentPrompt,
+		Tools:       instTools,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create instrumenter agent: %w", err)
+	}
+	ir, err := runner.New(runner.Config{
+		AppName:           "debuggeragent-instrument",
+		Agent:             instAgent,
+		SessionService:    session.InMemoryService(),
+		AutoCreateSession: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create instrumenter runner: %w", err)
+	}
+
+	return &Service{runner: r, patches: patches, instrument: ir, instStore: instStore}, nil
 }
 
 // Patches exposes the patch store (used by the approve-patch endpoint).
@@ -169,9 +208,15 @@ func (s *Service) Ask(ctx context.Context, sessionID, question string) (string, 
 }
 
 func (s *Service) run(ctx context.Context, sessionID, userMsg string, onStep StepFunc) (string, error) {
+	return runRunner(ctx, s.runner, sessionID, userMsg, onStep)
+}
+
+// runRunner drives any ADK runner to completion, accumulating text and emitting a
+// "tool" step for each function call (for SSE). Shared by both agents.
+func runRunner(ctx context.Context, r *runner.Runner, sessionID, userMsg string, onStep StepFunc) (string, error) {
 	msg := genai.NewContentFromText(userMsg, genai.RoleUser)
 	var final strings.Builder
-	for ev, err := range s.runner.Run(ctx, "judge", sessionID, msg, adkagent.RunConfig{}) {
+	for ev, err := range r.Run(ctx, "judge", sessionID, msg, adkagent.RunConfig{}) {
 		if err != nil {
 			return final.String(), err
 		}
@@ -201,6 +246,10 @@ func toolMessage(name string) string {
 		return "Reading the source file…"
 	case "propose_patch":
 		return "Proposing a fix…"
+	case "propose_instrumentation":
+		return "Proposing instrumentation points…"
+	case "write_instrumented_file":
+		return "Writing instrumented source…"
 	default:
 		return "Calling " + name + "…"
 	}

@@ -15,6 +15,7 @@ const KIND_LABEL: Record<HistoryEntry["kind"], string> = {
   proposed: "PROPOSED",
   approved: "APPROVED",
   pipeline: "PIPELINE",
+  scan: "SCAN",
 };
 
 function when(iso: string): string {

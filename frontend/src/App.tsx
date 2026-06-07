@@ -6,6 +6,7 @@ import { InvestigationPanel } from "./components/Investigation";
 import { AgentSteps } from "./components/AgentSteps";
 import { TestConsole } from "./components/TestConsole";
 import { Pipeline } from "./components/Pipeline";
+import { InstrumentationPanel } from "./components/Instrumentation";
 import { History } from "./components/History";
 
 export function App() {
@@ -95,6 +96,8 @@ export function App() {
               />
             </>
           )}
+
+          <InstrumentationPanel available={consoleAvailable} onComplete={reloadHistory} />
 
           <History reloadKey={historyKey} />
         </main>
