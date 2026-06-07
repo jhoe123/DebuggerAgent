@@ -1,6 +1,6 @@
 // Mock data used until the backend (T6) is live. It mirrors the seeded bug in
 // demo_app/main.go (/checkout index-out-of-range) so the demo is coherent.
-import type { Investigation, Problem } from "./types";
+import type { InstrumentationScan, Investigation, Problem } from "./types";
 
 export const mockProblems: Problem[] = [
   {
@@ -62,4 +62,52 @@ export const mockInvestigation: Investigation = {
   },
   suggestedTest:
     "Add a handler test asserting GET /checkout?index=99 returns 400 (not a panic) and index=1 returns 200 with \"banana\".",
+};
+
+// Mock instrumentation scan — mirrors the real telemetry gaps in demo_app/main.go
+// so the UI is demoable without a backend.
+export const mockScan: InstrumentationScan = {
+  root: "demo_app",
+  summary: "3 handlers/operations are missing spans, attributes, or error recording.",
+  truncated: false,
+  candidates: [
+    {
+      id: "main.go::healthzHandler::span::46::0",
+      file: "main.go",
+      symbol: "/healthz handler",
+      startLine: 46,
+      kind: "span",
+      rationale:
+        "The /healthz handler has no span, so health-probe latency/errors are invisible in Dynatrace.",
+      snippet:
+        'http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {\n\tfmt.Fprintln(w, "ok")\n})',
+      unifiedDiff:
+        '@@ /healthz handler\n-\thttp.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {\n-\t\tfmt.Fprintln(w, "ok")\n+\thttp.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {\n+\t\t_, span := tracer.Start(r.Context(), "GET /healthz")\n+\t\tdefer span.End()\n+\t\tfmt.Fprintln(w, "ok")\n \t})',
+    },
+    {
+      id: "main.go::reportHandler::record-error::115::1",
+      file: "main.go",
+      symbol: "reportHandler",
+      startLine: 115,
+      kind: "record-error",
+      rationale:
+        "reportHandler starts a span but never records errors or sets an error status on failure paths.",
+      snippet:
+        '_, span := tracer.Start(r.Context(), "GET /report")\ndefer span.End()',
+      unifiedDiff:
+        '@@ func reportHandler\n \t_, span := tracer.Start(r.Context(), "GET /report")\n \tdefer span.End()\n+\tdefer func() {\n+\t\tif rec := recover(); rec != nil {\n+\t\t\tspan.RecordError(fmt.Errorf("%v", rec), trace.WithStackTrace(true))\n+\t\t\tspan.SetStatus(codes.Error, "report failed")\n+\t\t}\n+\t}()',
+    },
+    {
+      id: "main.go::buildReport::span::133::2",
+      file: "main.go",
+      symbol: "buildReport",
+      startLine: 133,
+      kind: "span",
+      rationale:
+        "buildReport is the hot path for /report latency but has no child span to attribute time to.",
+      snippet: "func buildReport(n int) int {",
+      unifiedDiff:
+        '@@ func buildReport\n-func buildReport(n int) int {\n+func buildReport(ctx context.Context, n int) int {\n+\t_, span := tracer.Start(ctx, "buildReport")\n+\tdefer span.End()',
+    },
+  ],
 };

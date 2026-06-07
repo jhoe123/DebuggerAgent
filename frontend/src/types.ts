@@ -48,6 +48,35 @@ export interface ApproveResult {
   writtenTo: string;
 }
 
+export type InstrumentationKind =
+  | "otel-bootstrap"
+  | "tracer-init"
+  | "span"
+  | "record-error"
+  | "attributes"
+  | "metric";
+
+// One place the agent recommends adding Dynatrace/OpenTelemetry telemetry.
+// unifiedDiff is a small display hunk; the full patched file is generated at apply.
+export interface InstrumentationCandidate {
+  id: string;
+  file: string;
+  symbol?: string;
+  startLine: number;
+  endLine?: number;
+  kind: InstrumentationKind;
+  rationale: string;
+  snippet?: string;
+  unifiedDiff?: string;
+}
+
+export interface InstrumentationScan {
+  root: string;
+  summary: string;
+  candidates: InstrumentationCandidate[];
+  truncated?: boolean; // scan was capped (long candidate-list management)
+}
+
 export interface Step {
   stage: string; // investigate | apply | test | build | deploy | verify | tool
   status: "running" | "ok" | "fail" | "info";
@@ -64,7 +93,7 @@ export interface PipelineResult {
 
 export interface HistoryEntry {
   id: string;
-  kind: "proposed" | "approved" | "pipeline";
+  kind: "proposed" | "approved" | "pipeline" | "scan";
   problemId?: string;
   files: string[];
   summary: string;

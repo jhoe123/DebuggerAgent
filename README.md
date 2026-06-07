@@ -117,6 +117,34 @@ cd frontend && npm run dev
 The UI then shows the Test Console + an auto-remediation panel (autonomy toggle + per-stage
 checkboxes) with a live Apply→Test→Build→Deploy→Verify stream.
 
+## Auto-Instrument with Dynatrace (proactive observability)
+
+Where investigation is *reactive* (a production error → one fix), **Auto-Instrument** is
+*proactive*: a second agent **scans the service for OpenTelemetry gaps** — handlers without a
+span, operations without error recording, missing useful attributes, or a missing tracer/exporter
+bootstrap — and proposes a list of candidates. Each is shown with a kind badge, `file:line`, a
+rationale, and an expandable diff hunk; long lists are grouped by file with select-all, kind and
+text filters. You **selectively apply** some/all.
+
+```
+(generate) → Apply → Test/Vet → Debug (auto-repair) → Build → Deploy → Verify (/healthz)
+```
+
+Applying writes the chosen instrumentation, runs `go vet ./...` (a deterministic gate that
+compiles every package — including tests — and statically checks the AI's edits without being
+blocked by `demo_app`'s deliberately-failing seeded-bug tests), rebuilds, restarts, and verifies
+`/healthz`. If a stage fails the agent is fed the compiler/vet output to **fix its own edits** (up
+to 2 attempts); if it still can't go green the source is **rolled back via `git checkout`**.
+
+- **Scan** is read-only and **hosted-safe** (`POST /api/instrument/scan`).
+- **Apply** writes/builds/runs source and is **local-only**, gated by `ENABLE_TEST_CONSOLE`
+  (`POST /api/instrument/apply`) — the same boundary as auto-remediation. The Apply buttons are
+  disabled in the hosted UI; scanning still works.
+
+Logic: the instrumenter agent in [`backend/internal/agent/instrument.go`](backend/internal/agent/instrument.go)
+and the pipeline in [`backend/internal/democtl`](backend/internal/democtl); UI in
+[`frontend/src/components/Instrumentation.tsx`](frontend/src/components/Instrumentation.tsx).
+
 ## Performance monitoring (not just errors)
 
 The agent surfaces **two kinds** of Dynatrace problems: `error` (exception spans) and

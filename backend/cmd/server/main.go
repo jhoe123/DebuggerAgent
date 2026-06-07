@@ -75,13 +75,15 @@ func main() {
 	mux.HandleFunc("POST /api/investigate/stream", h.investigateStream)
 	mux.HandleFunc("POST /api/approve-patch", h.approvePatch)
 	mux.HandleFunc("POST /api/ask", h.ask)
-	mux.HandleFunc("GET /api/history", h.history) // audit log (hosted-safe)
+	mux.HandleFunc("GET /api/history", h.history)                 // audit log (hosted-safe)
+	mux.HandleFunc("POST /api/instrument/scan", h.instrumentScan) // read-only review (hosted-safe)
 
 	if cfg.EnableTestConsole {
 		mux.HandleFunc("GET /api/test/status", h.testStatus)
 		mux.HandleFunc("POST /api/test/trigger", h.testTrigger)
 		mux.HandleFunc("POST /api/test/reset", h.testReset)
 		mux.HandleFunc("POST /api/remediate", h.remediate)
+		mux.HandleFunc("POST /api/instrument/apply", h.instrumentApply) // writes/builds/runs — local only
 	}
 
 	// Optional: serve the built React app (Cloud Run). Dev uses the Vite server.
@@ -210,7 +212,9 @@ func (h *handlers) investigateStream(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	sse.step(api.Step{Stage: "investigate", Status: "running", Message: "Starting investigation…"})
-	onStep := func(stage, status, message string) { sse.step(api.Step{Stage: stage, Status: status, Message: message}) }
+	onStep := func(stage, status, message string) {
+		sse.step(api.Step{Stage: stage, Status: status, Message: message})
+	}
 	final, _, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, investigatePrompt(req.ProblemID), onStep)
 	if err != nil {
 		log.Printf("investigate(stream) %q error: %v", req.ProblemID, err)
@@ -292,6 +296,95 @@ func (h *handlers) remediate(w http.ResponseWriter, r *http.Request) {
 	result := h.demo.Remediate(ctx, opts, func(s api.Step) { sse.step(s) })
 	h.hist.RecordPipeline(req.ProblemID, result)
 	sse.event("result", result)
+}
+
+// --- Auto-instrumentation (scan is hosted-safe; apply is local-only) ---
+
+// instrumentScan runs the read-only instrumentation review and streams steps (SSE),
+// then a final InstrumentationScan result event.
+func (h *handlers) instrumentScan(w http.ResponseWriter, r *http.Request) {
+	sse, ok := newSSE(w)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
+	defer cancel()
+
+	sse.step(api.Step{Stage: "scan", Status: "running", Message: "Scanning source for instrumentation gaps…"})
+	onStep := func(stage, status, message string) {
+		sse.step(api.Step{Stage: stage, Status: status, Message: message})
+	}
+	sessionID := fmt.Sprintf("instrument-scan-%d", time.Now().UnixNano())
+	scan, err := h.agent.ScanInstrumentation(ctx, sessionID, onStep)
+	if err != nil {
+		log.Printf("instrument scan error: %v", err)
+		sse.event("error", map[string]string{"error": err.Error()})
+		return
+	}
+	h.hist.RecordScan(scan.Root, scan.Summary, filesOfCandidates(scan.Candidates))
+	sse.step(api.Step{Stage: "scan", Status: "ok", Message: fmt.Sprintf("Found %d instrumentation candidate(s)", len(scan.Candidates))})
+	sse.event("result", scan)
+}
+
+// instrumentApply generates the instrumented files for the selected candidates,
+// then runs the local apply→test→debug→build→deploy→verify pipeline (SSE).
+func (h *handlers) instrumentApply(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDs     []string         `json:"ids"`
+		Options *democtl.Options `json:"options"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	sse, ok := newSSE(w)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Minute)
+	defer cancel()
+
+	selected := h.agent.InstrumentSelected(req.IDs)
+	if len(selected) == 0 {
+		sse.event("error", map[string]string{"error": "no candidates selected — run a scan first"})
+		return
+	}
+	opts := democtl.Options{Apply: true, Test: true, Build: true, Deploy: true}
+	if req.Options != nil {
+		opts = *req.Options
+	}
+	onStep := func(stage, status, message string) {
+		sse.step(api.Step{Stage: stage, Status: status, Message: message})
+	}
+	sessionID := fmt.Sprintf("instrument-apply-%d", time.Now().UnixNano())
+
+	sse.step(api.Step{Stage: "generate", Status: "running", Message: fmt.Sprintf("Generating instrumented source for %d change(s)…", len(selected))})
+	files, err := h.agent.ApplyInstrumentation(ctx, sessionID, selected, "", onStep)
+	if err != nil {
+		sse.event("error", map[string]string{"error": err.Error()})
+		return
+	}
+	sse.step(api.Step{Stage: "generate", Status: "ok", Message: "Instrumented source generated"})
+
+	// repair re-invokes the agent (same session) to fix the files given build/test output.
+	repair := func(ctx context.Context, errOut string) (map[string]string, error) {
+		return h.agent.ApplyInstrumentation(ctx, sessionID, selected, errOut, onStep)
+	}
+	result := h.demo.ApplyInstrumentation(ctx, files, opts, repair, func(s api.Step) { sse.step(s) })
+	h.hist.RecordInstrumentation(result)
+	sse.event("result", result)
+}
+
+// filesOfCandidates returns the unique set of files referenced by candidates.
+func filesOfCandidates(cands []api.InstrumentationCandidate) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, c := range cands {
+		if c.File != "" && !seen[c.File] {
+			seen[c.File] = true
+			out = append(out, c.File)
+		}
+	}
+	return out
 }
 
 // parseInvestigation extracts the JSON object from the agent's final text.
