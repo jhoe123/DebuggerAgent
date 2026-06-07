@@ -6,11 +6,13 @@
 
 ## Current State
 
-- **Phase:** T1 nearly done — repo scaffolded, builds green, **initial commit made**.
-- **Next action:** Push to a **public GitHub repo** (manual — see README "Pushing to GitHub"),
-  then start **T2** (cloud/Dynatrace setup, user-driven).
-- **Blockers:** GitHub push needs your account (`gh` CLI not installed here). T2 needs your
-  GCP + Dynatrace accounts.
+- **Phase:** T1 done; credential-free slices of T5 and T7 done (committed).
+  - **T5a:** `read_source` + `propose_patch` tools (pure Go) implemented + unit tests pass.
+  - **T7a:** React+TS UI (ProblemList / Investigation / DiffViewer) built against a mock API;
+    `tsc` + `vite build` verified. Falls back to mock until the backend is live.
+- **Next action (you):** push to a **public GitHub repo** (README → "Pushing to GitHub"), and
+  do **T2** (GCP + Dynatrace accounts). Then I wire T3/T4/T6 against live services.
+- **Blockers:** T2/T3/T4/T6 need your GCP + Dynatrace credentials (I can't create those).
 - **Deadline:** **2026-06-11 14:00 PDT.**
 
 ## Tasks
@@ -57,3 +59,5 @@
 
 - 2026-06-07: Plan approved. Stack: React+TS / Go + ADK Go; Dynatrace track; CI/CD dropped.
 - 2026-06-08: T1 — scaffolded repo (docs, LICENSE, .env.example, backend/frontend/demo_app stubs).
+- 2026-06-08: T5a/T7a — pure-Go tools (read_source/propose_patch) + tests; React+TS UI on mock API
+  (build verified). LICENSE/README attributed to Jhoemar Pagao.
