@@ -41,6 +41,12 @@ body {
   font-size: 0.78rem;
 }
 
+/* top-level tabs */
+.tabs { display: flex; gap: 0.3rem; margin: -0.25rem 0 1.25rem; border-bottom: 1px solid var(--border); }
+.tab { background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--muted); padding: 0.55rem 1rem; font-size: 0.95rem; font-weight: 600; cursor: pointer; margin-bottom: -1px; }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); }
+
 .layout { display: grid; grid-template-columns: 320px 1fr; gap: 1.25rem; }
 
 /* problem list */
@@ -182,11 +188,9 @@ code { background: var(--panel-2); padding: 0.1rem 0.35rem; border-radius: 4px; 
 .run-btn:disabled { opacity: 0.6; cursor: default; }
 
 /* Patch & change history */
-.history { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border); }
-.history-header { display: flex; align-items: center; gap: 0.6rem; cursor: pointer; }
-.history-header h3 { margin: 0; }
+.history-header { display: flex; align-items: center; gap: 0.6rem; }
+.history-header p { margin: 0; flex: 1; }
 .history-header .ghost-btn { margin-left: auto; }
-.history-toggle { color: var(--muted); }
 .history-body { margin-top: 0.7rem; }
 .history-entry { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.8rem; margin-bottom: 0.6rem; }
 .history-top { display: flex; align-items: center; gap: 0.6rem; }

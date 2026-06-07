@@ -19,6 +19,7 @@ export function App() {
   const [consoleAvailable, setConsoleAvailable] = useState(false);
   const [historyKey, setHistoryKey] = useState(0);
   const reloadHistory = () => setHistoryKey((k) => k + 1);
+  const [tab, setTab] = useState<"investigate" | "history">("investigate");
 
   async function refreshProblems() {
     const p = await listProblems();
@@ -64,44 +65,68 @@ export function App() {
         {mock && <span className="mock-badge">demo data (mock) — backend not connected</span>}
       </header>
 
-      {consoleAvailable && <TestConsole onChange={refreshProblems} />}
+      <nav className="tabs">
+        <button
+          className={`tab ${tab === "investigate" ? "active" : ""}`}
+          onClick={() => setTab("investigate")}
+        >
+          Investigate
+        </button>
+        <button
+          className={`tab ${tab === "history" ? "active" : ""}`}
+          onClick={() => {
+            setTab("history");
+            reloadHistory();
+          }}
+        >
+          Patch &amp; change history
+        </button>
+      </nav>
 
-      <div className="layout">
-        <ProblemList problems={problems} selectedId={selectedId} onSelect={onSelect} />
+      {tab === "investigate" ? (
+        <>
+          {consoleAvailable && <TestConsole onChange={refreshProblems} />}
 
-        <main className="content">
-          {!selectedId && <p className="hint">Select a Dynatrace problem to investigate.</p>}
+          <div className="layout">
+            <ProblemList problems={problems} selectedId={selectedId} onSelect={onSelect} />
 
-          {selectedId && !result && (
-            <div className="investigate-cta">
-              <p>
-                Investigate <code>{selectedId}</code> — the agent will pull the problem from
-                Dynatrace, correlate the stack trace to source, and propose a fix.
-              </p>
-              <button className="investigate-btn" onClick={onInvestigate} disabled={investigating}>
-                {investigating ? "Investigating…" : "Investigate with AI"}
-              </button>
-            </div>
-          )}
+            <main className="content">
+              {!selectedId && <p className="hint">Select a Dynatrace problem to investigate.</p>}
 
-          {steps.length > 0 && <AgentSteps steps={steps} title="Agent activity" />}
+              {selectedId && !result && (
+                <div className="investigate-cta">
+                  <p>
+                    Investigate <code>{selectedId}</code> — the agent will pull the problem from
+                    Dynatrace, correlate the stack trace to source, and propose a fix.
+                  </p>
+                  <button className="investigate-btn" onClick={onInvestigate} disabled={investigating}>
+                    {investigating ? "Investigating…" : "Investigate with AI"}
+                  </button>
+                </div>
+              )}
 
-          {result && (
-            <>
-              <InvestigationPanel data={result} onApproved={reloadHistory} />
-              <Pipeline
-                available={consoleAvailable}
-                problemId={result.problemId}
-                onComplete={reloadHistory}
-              />
-            </>
-          )}
+              {steps.length > 0 && <AgentSteps steps={steps} title="Agent activity" />}
 
-          <InstrumentationPanel available={consoleAvailable} onComplete={reloadHistory} />
+              {result && (
+                <>
+                  <InvestigationPanel data={result} onApproved={reloadHistory} />
+                  <Pipeline
+                    available={consoleAvailable}
+                    problemId={result.problemId}
+                    onComplete={reloadHistory}
+                  />
+                </>
+              )}
 
+              <InstrumentationPanel available={consoleAvailable} onComplete={reloadHistory} />
+            </main>
+          </div>
+        </>
+      ) : (
+        <main className="content history-view">
           <History reloadKey={historyKey} />
         </main>
-      </div>
+      )}
     </div>
   );
 }

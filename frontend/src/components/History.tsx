@@ -32,7 +32,6 @@ function when(iso: string): string {
 // the files each one touched. Read-only audit view (GET /api/history).
 export function History({ reloadKey }: { reloadKey: number }) {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
-  const [open, setOpen] = useState(true);
   const [loading, setLoading] = useState(false);
 
   async function refresh() {
@@ -49,24 +48,17 @@ export function History({ reloadKey }: { reloadKey: number }) {
 
   return (
     <section className="history">
-      <div className="history-header" onClick={() => setOpen((o) => !o)}>
-        <h3>Patch &amp; change history</h3>
+      <div className="history-header">
+        <p className="muted">
+          Every proposed patch, approval, scan, and auto-remediation run — with the files each touched.
+        </p>
         <span className="mini-chip">{entries.length}</span>
-        <button
-          className="ghost-btn"
-          onClick={(e) => {
-            e.stopPropagation();
-            refresh();
-          }}
-          disabled={loading}
-        >
+        <button className="ghost-btn" onClick={refresh} disabled={loading}>
           {loading ? "…" : "Refresh"}
         </button>
-        <span className="history-toggle">{open ? "▾" : "▸"}</span>
       </div>
 
-      {open && (
-        <div className="history-body">
+      <div className="history-body">
           {entries.length === 0 && (
             <p className="muted">No changes yet — investigate a problem to propose a patch.</p>
           )}
@@ -101,8 +93,7 @@ export function History({ reloadKey }: { reloadKey: number }) {
               )}
             </div>
           ))}
-        </div>
-      )}
+      </div>
     </section>
   );
 }
