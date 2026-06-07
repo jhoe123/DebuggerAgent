@@ -35,9 +35,11 @@ func main() {
 	}
 	dt, err := dynatrace.Open(ctx, cfg.MCPNodeBin, cfg.DTEnvironment, cfg.DTPlatformTok)
 	if err != nil {
-		log.Fatalf("open dynatrace client: %v", err)
+		// Non-fatal: keep serving so the agent and health check still work.
+		log.Printf("WARNING: dynatrace client unavailable: %v", err)
+	} else {
+		defer dt.Close()
 	}
-	defer dt.Close()
 	h := &handlers{agent: svc, dt: dt}
 
 	mux := http.NewServeMux()
@@ -59,6 +61,10 @@ func main() {
 }
 
 func (h *handlers) problems(w http.ResponseWriter, r *http.Request) {
+	if h.dt == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "dynatrace client unavailable"})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
 	probs, err := h.dt.ListProblems(ctx)

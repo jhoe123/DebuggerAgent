@@ -1,0 +1,11 @@
+.git
+.env
+.env.local
+**/node_modules
+frontend/dist
+backend/bin
+.patches
+*.tsbuildinfo
+*.output
+node-portable
+.gcloud-ca

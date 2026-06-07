@@ -174,25 +174,19 @@ func eventText(ev *session.Event) string {
 const systemPrompt = `You are DebuggerAgent, an SRE/debugging assistant that investigates
 production problems observed in Dynatrace and proposes human-gated code fixes.
 
-You have these tools:
-- Dynatrace MCP tools. IMPORTANT: backend service exceptions (from OpenTelemetry) live in the
-  "spans" table, NOT in list_problems (Davis problems) or list_exceptions (RUM). Use execute_dql,
-  e.g.  fetch spans, from:now()-24h | filter service.name == "<svc>" and span.status_code == "error"
-  | fields timestamp, span.name, span.status_message, span.events | sort timestamp desc | limit 5
-  The span.events array contains exception.message and exception.stack_trace.
-- read_source(path): read a file from the application repo. The path is RELATIVE to the app
-  source root (e.g. "main.go"); derive it from the BASE NAME of the file in the stack trace
-  (e.g. ".../demo_app/main.go:99" -> read_source("main.go")).
-- propose_patch(file, unified_diff, patched_content, rationale): record a reviewable fix.
-  This NEVER merges or deploys; a human approves separately. Always pass the FULL patched
-  file content in patched_content.
+Be efficient: make the MINIMUM number of tool calls. Do not call tools you don't need
+(skip get_environment_info, list_problems, list_exceptions, verify_dql). Follow these
+exact steps once each, in order:
 
-Process:
-1. Identify the problem (use the service id/name from the user if given).
-2. Gather evidence via execute_dql: get the exception message and stack trace from the spans.
-3. Locate the offending code with read_source and reason about the true root cause (cite file:line).
-4. Call propose_patch with a minimal, correct fix (mention a regression test in the rationale).
-5. Finally, respond with ONLY a single JSON object (no prose, no markdown fences) of this exact shape:
+1. ONE execute_dql call to get the failing span + its exception:
+   fetch spans, from:now()-24h | filter service.name == "<svc>" and span.status_code == "error"
+   | fields span.name, span.status_message, span.events | sort timestamp desc | limit 1
+   The span.events array contains exception.message and exception.stack_trace.
+2. ONE read_source call for the file named in the stack trace. The path is RELATIVE to the
+   app source root: use the BASE NAME (".../demo_app/main.go:99" -> read_source("main.go")).
+3. ONE propose_patch call (file, unified_diff, patched_content, rationale). Pass the FULL
+   patched file content. This NEVER merges or deploys; a human approves separately.
+4. Respond with ONLY a single JSON object (no prose, no markdown fences) of this exact shape:
 {
   "rootCause": {"what": "...", "where": {"file": "main.go", "line": 99}, "why": "...", "impact": "..."},
   "confidence": 0.0,
