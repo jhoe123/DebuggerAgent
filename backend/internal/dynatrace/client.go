@@ -55,9 +55,11 @@ func (c *Client) executeDQLMeta(ctx context.Context, dql string) ([]map[string]a
 	return meta.Records, meta.ScannedBytes, nil
 }
 
-// perfThresholdNs is the p95 duration above which an operation is flagged as a
-// performance problem. Grail span duration is in NANOSECONDS, so 500ms = 5e8 ns.
-const perfThresholdNs = 500_000_000
+// perfThresholdMs is the p95 latency (milliseconds) above which an operation is
+// flagged as a performance problem. The threshold is applied in Go: Grail span
+// `duration` is a duration TYPE, and the post-summarize `p95` won't compare against
+// a bare nanosecond literal in DQL, so we filter on the parsed value here instead.
+const perfThresholdMs = 500
 
 // ListProblems summarizes recent error spans AND slow operations into one problem
 // list for the UI. Each problem is tagged Kind ("error"|"performance"); its ID is a
@@ -69,10 +71,12 @@ func (c *Client) ListProblems(ctx context.Context) ([]api.Problem, error) {
 | summarize count = count(), latest = max(start_time), by:{service.name, span.name, span.status_message}
 | sort latest desc
 | limit 20`
+	// Non-error spans: status_code is null for unset spans, and `!= "error"` drops
+	// nulls (null != x is null), so include nulls explicitly. The p95 threshold is
+	// applied in Go below (duration-typed p95 won't compare in DQL).
 	const perfDQL = `fetch spans, from:now()-30d
-| filter span.status_code != "error"
+| filter isNull(span.status_code) or span.status_code != "error"
 | summarize count = count(), p95 = percentile(duration, 95), latest = max(start_time), by:{service.name, span.name}
-| filter p95 > 500000000
 | sort p95 desc
 | limit 20`
 
@@ -106,9 +110,12 @@ func (c *Client) ListProblems(ctx context.Context) ([]api.Problem, error) {
 	if perfRecs, perfScan, perfErr := c.executeDQLMeta(ctx, perfDQL); perfErr == nil {
 		scanned += perfScan
 		for _, r := range perfRecs {
+			p95ms := int64(atof(str(r["p95"])) / 1e6)
+			if p95ms < perfThresholdMs {
+				continue // not slow enough to flag
+			}
 			svc := str(r["service.name"])
 			count := atoi(str(r["count"]))
-			p95ms := int64(atof(str(r["p95"])) / 1e6)
 			span := str(r["span.name"])
 			problems = append(problems, api.Problem{
 				ID:            "performance:" + svc,
