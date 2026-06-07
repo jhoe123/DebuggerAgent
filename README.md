@@ -30,22 +30,33 @@ Dynatrace problem ──MCP──▶ Go/ADK agent (Gemini 3) ──▶ root-caus
    # fill in GCP + Dynatrace values (see comments in .env.example)
    ```
 
-2. **Google Cloud / Gemini**
+2. **Google Cloud / Gemini** (APIs `aiplatform` + `run` already enabled on `emogent-demo-2026`)
    ```bash
-   gcloud auth application-default login
-   gcloud config set project "$GOOGLE_CLOUD_PROJECT"
-   gcloud services enable aiplatform.googleapis.com run.googleapis.com
+   gcloud config set project emogent-demo-2026
+   gcloud auth application-default login           # opens a browser — run in your own terminal
+   gcloud auth application-default set-quota-project emogent-demo-2026
    ```
-   Confirm the exact **Gemini 3** model id available in your region and set `GEMINI_MODEL`.
+   Confirmed model: **`gemini-3.1-pro-preview`**, served from the **`global`** location
+   (not `us-central1`). Already set in `.env`.
 
 3. **Dynatrace**
-   - Sign up for the free SaaS trial; note your tenant URL (`DT_ENVIRONMENT`).
-   - Create a **platform token** with scopes to read problems, read logs, and run DQL/Grail
-     queries. Put it in `DT_PLATFORM_TOKEN`.
-   - Verify the MCP server can reach your tenant:
+   - Sign up for the free SaaS trial at <https://www.dynatrace.com/trial/>; note your tenant
+     URL, e.g. `https://abc12345.apps.dynatrace.com` → `DT_ENVIRONMENT`.
+   - Create a **Platform token** (Dynatrace → **Settings → Access Tokens / Platform tokens →
+     Generate new token**) and put it in `DT_PLATFORM_TOKEN`. Recommended scopes for this
+     project (grant all to avoid tool failures):
+     ```
+     app-engine:apps:run
+     storage:buckets:read   storage:logs:read     storage:metrics:read
+     storage:spans:read     storage:events:read   storage:entities:read
+     storage:bizevents:read storage:system:read   storage:smartscape:read
+     davis-copilot:nl2dql:execute   davis-copilot:dql2nl:execute
+     davis:analyzers:read           davis:analyzers:execute
+     ```
+   - Verify the MCP server can reach your tenant (Node already trusts the Avast CA via
+     `NODE_EXTRA_CA_CERTS`):
      ```bash
-     npx -y @dynatrace-oss/dynatrace-mcp-server
-     # with DT_ENVIRONMENT and DT_PLATFORM_TOKEN exported
+     DT_ENVIRONMENT=... DT_PLATFORM_TOKEN=... npx -y @dynatrace-oss/dynatrace-mcp-server@latest
      ```
 
 4. **Seed a production problem** (see [demo_app/](demo_app/)): run the instrumented buggy
@@ -86,6 +97,23 @@ git remote add origin https://github.com/<you>/DebuggerAgent.git
 git push -u origin main
 ```
 Ensure the repo is **public** and the `LICENSE` file is present (both required by the rules).
+
+## Troubleshooting
+
+**`CERTIFICATE_VERIFY_FAILED` / `unable to get local issuer certificate` from gcloud or npx.**
+Avast Antivirus' Web/Mail Shield does TLS interception (re-signs HTTPS with its own root CA).
+gcloud and Node use their own CA bundles and don't see the Windows store. Fix (already applied
+on this machine): export the Windows root store and point both tools at it.
+```powershell
+$pem = Join-Path $HOME ".gcloud-ca\win-roots.pem"
+$certs = Get-ChildItem Cert:\LocalMachine\Root, Cert:\CurrentUser\Root
+# ...write each cert as a PEM block to $pem...
+gcloud config set core/custom_ca_certs_file "$pem"
+setx NODE_EXTRA_CA_CERTS "$pem"
+```
+Alternative: disable Avast's HTTPS scanning (Menu → Settings → Protection → Core Shields →
+Web Shield → uncheck "Enable HTTPS scanning"). To undo the gcloud change:
+`gcloud config unset core/custom_ca_certs_file`.
 
 ## Author
 

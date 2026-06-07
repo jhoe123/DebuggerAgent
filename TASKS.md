@@ -10,9 +10,14 @@
   - **T5a:** `read_source` + `propose_patch` tools (pure Go) implemented + unit tests pass.
   - **T7a:** React+TS UI (ProblemList / Investigation / DiffViewer) built against a mock API;
     `tsc` + `vite build` verified. Falls back to mock until the backend is live.
-- **Next action (you):** push to a **public GitHub repo** (README → "Pushing to GitHub"), and
-  do **T2** (GCP + Dynatrace accounts). Then I wire T3/T4/T6 against live services.
-- **Blockers:** T2/T3/T4/T6 need your GCP + Dynatrace credentials (I can't create those).
+- **T2 in progress:** GCP side done — fixed Avast TLS interception (gcloud + Node now trust the
+  Windows root store via `~/.gcloud-ca/win-roots.pem`); project `emogent-demo-2026` has billing +
+  `aiplatform` + `run` enabled; **confirmed model `gemini-3.1-pro-preview` @ `global`**; `.env`
+  created with GCP values filled.
+- **Next action (you):** (1) `gcloud auth application-default login` in your terminal (browser),
+  then set quota project; (2) sign up Dynatrace trial + create a **Platform token** (scopes in
+  README §3) and paste tenant URL + token into `.env`. Then I verify the MCP server and wire T3/T4/T6.
+- **Blockers:** ADC browser login + Dynatrace token need you (can't be done headless here).
 - **Deadline:** **2026-06-11 14:00 PDT.**
 
 ## Tasks
