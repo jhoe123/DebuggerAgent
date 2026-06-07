@@ -15,8 +15,15 @@
   `global` generates**; ADC login done. Dynatrace: tenant `ney49045`, platform token in `.env`,
   **MCP server connects (20 tools)**. Node note: MCP requires Node ≥ 20.17 → using portable
   **Node 24** via `MCP_NODE_BIN` (system Node 20.12 is too old).
-- **Next action (me):** **T3** (instrument demo app → real Problem) + **T4** (ADK Go agent +
-  Dynatrace MCP, Gemini 3.1) + **T6** (`/api` endpoints) → flip the UI from mock to live.
+- **T4 DONE & verified end-to-end.** ADK Go v1.4.0 agent (Gemini 3.1 @ Vertex) with the Dynatrace
+  MCP toolset + `read_source`/`propose_patch` function tools. `go run ./cmd/agentcheck` builds the
+  agent, launches the MCP server under Node 24, calls `list_problems` live, and returns structured
+  JSON (tenant currently has 0 problems → that's T3). Key gotcha solved: prepend Node 24 to the
+  MCP child's PATH so npx doesn't spawn the server under system Node 20.12.
+- **Next action (me):** **T6** (`/api` endpoints + flip UI to live) and **T3** (seed a real Problem
+  in Dynatrace so the demo has something to investigate — needs a decision, see below).
+- **T3 decision needed:** how to get a real problem/exception into the tenant (OTel ingest vs
+  OneAgent vs log-ingest). Affects whether another token / admin is required.
 - **Deadline:** **2026-06-11 14:00 PDT.**
 
 ## Tasks
@@ -26,7 +33,7 @@
 | T1 | Scaffold repo + LICENSE + PROJECT.md/TASKS.md/README + initial commit (done) + push **public** GitHub (manual) | — | [~] |
 | T2 | Cloud/Dynatrace setup: GCP project+billing+APIs, Gemini 3 access, Dynatrace trial + platform token, run + verify MCP server | — | [x] |
 | T3 | `demo_app/` (Go) that throws a real exception; instrument with Dynatrace; trigger so a **Problem** appears | T2 | [ ] |
-| T4 | Backend skeleton: Go module, ADK Go agent w/ Gemini 3, connect **Dynatrace MCP** toolset (static token) | T2 | [ ] |
+| T4 | Backend skeleton: Go module, ADK Go agent w/ Gemini 3, connect **Dynatrace MCP** toolset (static token) | T2 | [x] |
 | T5 | Implement `read_source` + `propose_patch` tools; agent prompt for fetch→correlate→summarize→diff | T3, T4 | [ ] |
 | T6 | Backend REST/SSE endpoints (list problems, investigate, approve-patch) | T5 | [ ] |
 | T7 | React+TS frontend: chat, problem list, root-cause panel, **diff viewer + Approve** | T6 | [ ] |
@@ -67,3 +74,6 @@
   (build verified). LICENSE/README attributed to Jhoemar Pagao.
 - 2026-06-08: T2 done — GCP (Gemini 3.1 @ global, ADC, Avast TLS fix) + Dynatrace MCP verified
   (20 tools). Portable Node 24 required for the MCP server (`MCP_NODE_BIN`).
+- 2026-06-08: T4 done — ADK Go v1.4.0 agent (Gemini 3.1, Dynatrace MCP toolset, read_source +
+  propose_patch). Smoke test (`cmd/agentcheck`) runs live end-to-end. Node-24-on-PATH fix for the
+  MCP child process.
