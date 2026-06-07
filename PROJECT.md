@@ -92,3 +92,9 @@ DebuggerAgent/
 
 - 2026-06-07: Chose Dynatrace track; dropped CI/CD from scope; React+TS / Go stack;
   ADK Go primary with direct-Vertex fallback; MIT license; Cloud Run hosting.
+- 2026-06-08: T2 GCP done — project `emogent-demo-2026`, model `gemini-3.1-pro-preview` @
+  `global` (verified generating). Fixed Avast TLS interception via Windows-root PEM for
+  gcloud + Node. **T4 decision confirmed: ADK Go + Dynatrace MCP** (not the direct-Vertex fallback).
+- 2026-06-08: T2 Dynatrace done — tenant `ney49045`, MCP server v1.8.6 connects (20 tools:
+  list_problems, list_exceptions, execute_dql, get_environment_info, find_entity_by_name, …).
+  MCP server needs Node ≥ 20.17 → spawn it with portable Node 24 (`MCP_NODE_BIN`).

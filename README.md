@@ -115,6 +115,12 @@ Alternative: disable Avast's HTTPS scanning (Menu → Settings → Protection �
 Web Shield → uncheck "Enable HTTPS scanning"). To undo the gcloud change:
 `gcloud config unset core/custom_ca_certs_file`.
 
+**`webidl.util.markAsUncloneable is not a function` when starting the MCP server.**
+The Dynatrace MCP server bundles a newer `undici` that needs Node ≥ 20.17 (use 22/24).
+System Node 20.12 crashes on load. Fix: install a newer Node (a portable zip from
+nodejs.org works without admin) and set `MCP_NODE_BIN` in `.env` to that `node.exe`.
+Verify the connection with: `node scripts/mcp_check.mjs` (does an MCP handshake + lists tools).
+
 ## Author
 
 Jhoemar Pagao — <jhoemar.pagao@gmail.com>

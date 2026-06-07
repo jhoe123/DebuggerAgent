@@ -10,14 +10,13 @@
   - **T5a:** `read_source` + `propose_patch` tools (pure Go) implemented + unit tests pass.
   - **T7a:** React+TS UI (ProblemList / Investigation / DiffViewer) built against a mock API;
     `tsc` + `vite build` verified. Falls back to mock until the backend is live.
-- **T2 in progress:** GCP side done — fixed Avast TLS interception (gcloud + Node now trust the
-  Windows root store via `~/.gcloud-ca/win-roots.pem`); project `emogent-demo-2026` has billing +
-  `aiplatform` + `run` enabled; **confirmed model `gemini-3.1-pro-preview` @ `global`**; `.env`
-  created with GCP values filled.
-- **Next action (you):** (1) `gcloud auth application-default login` in your terminal (browser),
-  then set quota project; (2) sign up Dynatrace trial + create a **Platform token** (scopes in
-  README §3) and paste tenant URL + token into `.env`. Then I verify the MCP server and wire T3/T4/T6.
-- **Blockers:** ADC browser login + Dynatrace token need you (can't be done headless here).
+- **T2 DONE & verified.** GCP: Avast TLS fixed (gcloud + Node trust `~/.gcloud-ca/win-roots.pem`);
+  project `emogent-demo-2026` billing + `aiplatform` + `run` on; **`gemini-3.1-pro-preview` @
+  `global` generates**; ADC login done. Dynatrace: tenant `ney49045`, platform token in `.env`,
+  **MCP server connects (20 tools)**. Node note: MCP requires Node ≥ 20.17 → using portable
+  **Node 24** via `MCP_NODE_BIN` (system Node 20.12 is too old).
+- **Next action (me):** **T3** (instrument demo app → real Problem) + **T4** (ADK Go agent +
+  Dynatrace MCP, Gemini 3.1) + **T6** (`/api` endpoints) → flip the UI from mock to live.
 - **Deadline:** **2026-06-11 14:00 PDT.**
 
 ## Tasks
@@ -25,7 +24,7 @@
 | ID | Task | Depends on | Status |
 |----|------|-----------|--------|
 | T1 | Scaffold repo + LICENSE + PROJECT.md/TASKS.md/README + initial commit (done) + push **public** GitHub (manual) | — | [~] |
-| T2 | Cloud/Dynatrace setup: GCP project+billing+APIs, Gemini 3 access, ADK Go install, Dynatrace trial + platform token, run + verify MCP server | — | [ ] |
+| T2 | Cloud/Dynatrace setup: GCP project+billing+APIs, Gemini 3 access, Dynatrace trial + platform token, run + verify MCP server | — | [x] |
 | T3 | `demo_app/` (Go) that throws a real exception; instrument with Dynatrace; trigger so a **Problem** appears | T2 | [ ] |
 | T4 | Backend skeleton: Go module, ADK Go agent w/ Gemini 3, connect **Dynatrace MCP** toolset (static token) | T2 | [ ] |
 | T5 | Implement `read_source` + `propose_patch` tools; agent prompt for fetch→correlate→summarize→diff | T3, T4 | [ ] |
@@ -66,3 +65,5 @@
 - 2026-06-08: T1 — scaffolded repo (docs, LICENSE, .env.example, backend/frontend/demo_app stubs).
 - 2026-06-08: T5a/T7a — pure-Go tools (read_source/propose_patch) + tests; React+TS UI on mock API
   (build verified). LICENSE/README attributed to Jhoemar Pagao.
+- 2026-06-08: T2 done — GCP (Gemini 3.1 @ global, ADC, Avast TLS fix) + Dynatrace MCP verified
+  (20 tools). Portable Node 24 required for the MCP server (`MCP_NODE_BIN`).
