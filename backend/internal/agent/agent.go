@@ -9,9 +9,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 
 	adkagent "google.golang.org/adk/agent"
@@ -26,6 +23,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/debuggeragent/backend/internal/dynatrace"
 	"github.com/debuggeragent/backend/internal/tools"
 )
 
@@ -106,7 +104,9 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	}
 
 	dtToolset, err := mcptoolset.New(mcptoolset.Config{
-		Transport: &mcp.CommandTransport{Command: dynatraceMCPCommand(cfg)},
+		Transport: &mcp.CommandTransport{
+			Command: dynatrace.MCPCommand(cfg.MCPNodeBin, cfg.DTEnvironment, cfg.DTPlatformTok),
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dynatrace mcp toolset: %w", err)
@@ -171,71 +171,33 @@ func eventText(ev *session.Event) string {
 	return b.String()
 }
 
-// dynatraceMCPCommand builds the command that launches the Dynatrace MCP server.
-// It prefers MCP_NODE_BIN (a Node >= 20.17, e.g. portable Node 24) and runs the
-// server via that node's npx-cli, falling back to npx on PATH.
-func dynatraceMCPCommand(cfg Config) *exec.Cmd {
-	node := cfg.MCPNodeBin
-	const pkg = "@dynatrace-oss/dynatrace-mcp-server@latest"
-	env := os.Environ()
-	var cmd *exec.Cmd
-	if node != "" {
-		nodeDir := filepath.Dir(node)
-		npxCli := filepath.Join(nodeDir, "node_modules", "npm", "bin", "npx-cli.js")
-		if _, err := os.Stat(npxCli); err == nil {
-			cmd = exec.Command(node, npxCli, "-y", pkg)
-			// Put the chosen Node first on PATH so the server npx spawns also uses
-			// it (otherwise an older system Node may run the server and crash).
-			env = prependPath(env, nodeDir)
-		}
-	}
-	if cmd == nil {
-		cmd = exec.Command("npx", "-y", pkg)
-	}
-	cmd.Env = append(env,
-		"DT_ENVIRONMENT="+cfg.DTEnvironment,
-		"DT_PLATFORM_TOKEN="+cfg.DTPlatformTok,
-		"DT_MCP_DISABLE_TELEMETRY=true",
-	)
-	return cmd
-}
-
-// prependPath returns env with dir placed first on the PATH variable.
-func prependPath(env []string, dir string) []string {
-	sep := string(os.PathListSeparator)
-	for i, e := range env {
-		if len(e) >= 5 && strings.EqualFold(e[:5], "PATH=") {
-			env[i] = "PATH=" + dir + sep + e[5:]
-			return env
-		}
-	}
-	return append(env, "PATH="+dir)
-}
-
 const systemPrompt = `You are DebuggerAgent, an SRE/debugging assistant that investigates
 production problems observed in Dynatrace and proposes human-gated code fixes.
 
 You have these tools:
-- Dynatrace MCP tools (list_problems, list_exceptions, execute_dql, get_environment_info,
-  find_entity_by_name, verify_dql, generate_dql_from_natural_language, ...): use them to
-  fetch the problem, its affected entity, correlated logs, exceptions and stack traces.
-- read_source(path): read a file from the application repo (path RELATIVE to the project
-  root, e.g. "main.go") to correlate a stack trace to the responsible code.
+- Dynatrace MCP tools. IMPORTANT: backend service exceptions (from OpenTelemetry) live in the
+  "spans" table, NOT in list_problems (Davis problems) or list_exceptions (RUM). Use execute_dql,
+  e.g.  fetch spans, from:now()-24h | filter service.name == "<svc>" and span.status_code == "error"
+  | fields timestamp, span.name, span.status_message, span.events | sort timestamp desc | limit 5
+  The span.events array contains exception.message and exception.stack_trace.
+- read_source(path): read a file from the application repo. The path is RELATIVE to the app
+  source root (e.g. "main.go"); derive it from the BASE NAME of the file in the stack trace
+  (e.g. ".../demo_app/main.go:99" -> read_source("main.go")).
 - propose_patch(file, unified_diff, patched_content, rationale): record a reviewable fix.
   This NEVER merges or deploys; a human approves separately. Always pass the FULL patched
   file content in patched_content.
 
 Process:
-1. Identify the problem (use the problem id from the user if given, else the most recent open problem).
-2. Gather evidence: pull the stack trace / exception / logs via the Dynatrace tools.
-3. Locate the offending code with read_source and reason about the true root cause.
-4. Call propose_patch with a minimal, correct fix (and a regression-test suggestion in the rationale).
+1. Identify the problem (use the service id/name from the user if given).
+2. Gather evidence via execute_dql: get the exception message and stack trace from the spans.
+3. Locate the offending code with read_source and reason about the true root cause (cite file:line).
+4. Call propose_patch with a minimal, correct fix (mention a regression test in the rationale).
 5. Finally, respond with ONLY a single JSON object (no prose, no markdown fences) of this exact shape:
 {
-  "rootCause": {"what": "...", "where": {"file": "main.go", "line": 36}, "why": "...", "impact": "..."},
+  "rootCause": {"what": "...", "where": {"file": "main.go", "line": 99}, "why": "...", "impact": "..."},
   "confidence": 0.0,
   "alternatives": ["..."],
-  "proposedPatch": {"file": "main.go", "unifiedDiff": "--- a/...\n+++ b/...", "rationale": "..."},
+  "proposedPatch": {"file": "main.go", "unifiedDiff": "--- a/main.go\n+++ b/main.go\n...", "rationale": "..."},
   "suggestedTest": "..."
 }
 confidence is your 0..1 confidence in the root cause. Keep strings concise.`

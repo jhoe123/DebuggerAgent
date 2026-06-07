@@ -22,8 +22,10 @@ type Config struct {
 }
 
 // LoadConfig loads .env (best-effort) then reads configuration from the environment.
+// Relative SOURCE_ROOT / PATCH_OUTPUT_DIR are resolved against the .env directory
+// (repo root) so the server works regardless of its working directory.
 func LoadConfig() Config {
-	loadDotEnv()
+	baseDir := loadDotEnv()
 	return Config{
 		GeminiModel:    env("GEMINI_MODEL", "gemini-3.1-pro-preview"),
 		GCPProject:     os.Getenv("GOOGLE_CLOUD_PROJECT"),
@@ -31,8 +33,8 @@ func LoadConfig() Config {
 		DTEnvironment:  os.Getenv("DT_ENVIRONMENT"),
 		DTPlatformTok:  os.Getenv("DT_PLATFORM_TOKEN"),
 		MCPNodeBin:     os.Getenv("MCP_NODE_BIN"),
-		SourceRoot:     env("SOURCE_ROOT", "./demo_app"),
-		PatchOutputDir: env("PATCH_OUTPUT_DIR", "./.patches"),
+		SourceRoot:     resolveRel(baseDir, env("SOURCE_ROOT", "./demo_app")),
+		PatchOutputDir: resolveRel(baseDir, env("PATCH_OUTPUT_DIR", "./.patches")),
 		Port:           env("PORT", "8080"),
 	}
 }
@@ -44,9 +46,17 @@ func env(key, def string) string {
 	return def
 }
 
+func resolveRel(baseDir, p string) string {
+	if baseDir == "" || filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(baseDir, p)
+}
+
 // loadDotEnv reads .env from the working dir or its parent (so the server can be
-// run from either the repo root or backend/). Existing env vars are not overridden.
-func loadDotEnv() {
+// run from the repo root or backend/). It returns the directory of the loaded
+// .env (or "" if none). Existing env vars are not overridden.
+func loadDotEnv() string {
 	for _, p := range []string{".env", filepath.Join("..", ".env")} {
 		f, err := os.Open(p)
 		if err != nil {
@@ -68,6 +78,7 @@ func loadDotEnv() {
 			}
 		}
 		f.Close()
-		return
+		return filepath.Dir(p)
 	}
+	return ""
 }

@@ -66,8 +66,9 @@ func initTracer(ctx context.Context) (func(context.Context) error, error) {
 	if svc == "" {
 		svc = "checkout-demo"
 	}
+	// Schemaless avoids a schema-URL conflict with resource.Default().
 	res, err := resource.Merge(resource.Default(),
-		resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName(svc)))
+		resource.NewSchemaless(semconv.ServiceName(svc)))
 	if err != nil {
 		return nil, err
 	}
