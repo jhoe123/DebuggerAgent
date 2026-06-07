@@ -92,6 +92,7 @@ func (h *handlers) investigate(w http.ResponseWriter, r *http.Request) {
 		"call propose_patch with a fix, then return the final JSON object."
 	final, _, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, prompt, nil)
 	if err != nil {
+		log.Printf("investigate %q error: %v", req.ProblemID, err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}

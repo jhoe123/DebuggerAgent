@@ -90,10 +90,17 @@ root-cause summary and proposed diff, then **Approve** to write the patch to a b
 
 ## Deploy (Cloud Run)
 
+The root `Dockerfile` ships a Node 24 runtime (to run the Dynatrace MCP server) plus the Go
+server, the built React app, and `demo_app`. Vertex auth uses the Cloud Run runtime service
+account (grant it `roles/aiplatform.user`); the Dynatrace token is passed as an env var.
+
 ```bash
-gcloud run deploy debugger-agent --source . --region "$GOOGLE_CLOUD_LOCATION" --allow-unauthenticated
+gcloud run deploy debugger-agent --source . --region us-central1 --allow-unauthenticated \
+  --memory 1Gi --cpu 1 --timeout 300 \
+  --set-env-vars "GOOGLE_CLOUD_PROJECT=<project>,GEMINI_MODEL=gemini-3.1-pro-preview,DT_ENVIRONMENT=<tenant>,DT_PLATFORM_TOKEN=<token>"
 ```
-Set the env vars (`DT_*`, `GEMINI_MODEL`, etc.) on the service; use Secret Manager for tokens.
+`GOOGLE_CLOUD_LOCATION=global`, `WEB_DIR`, `SOURCE_ROOT`, and `PATCH_OUTPUT_DIR=/tmp/patches`
+are baked into the image. For production use Secret Manager (`--set-secrets`) for the token.
 
 ## For hackathon judges
 
