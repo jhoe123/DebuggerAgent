@@ -13,6 +13,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -160,6 +161,9 @@ func (r *CloudRunner) Remediate(ctx context.Context, opts democtl.Options, emit 
 	// Package + upload the source to GCS.
 	object := fmt.Sprintf("patchpilot-source/%d.tar.gz", time.Now().UnixNano())
 	step(api.Step{Stage: "build", Status: "running", Message: "Packaging source → gs://" + eff.Bucket + "/" + object})
+	if err := r.ensureBucket(ctx, eff); err != nil {
+		return fail("build", "Staging bucket unavailable", err.Error())
+	}
 	if err := r.uploadSource(ctx, eff, overlay, object); err != nil {
 		return fail("build", "Source upload failed", err.Error())
 	}
@@ -319,6 +323,28 @@ func (r *CloudRunner) pollBuild(ctx context.Context, eff Config, buildID string,
 		case <-time.After(4 * time.Second):
 		}
 	}
+}
+
+// ensureBucket makes sure the Cloud Build staging bucket exists, creating it in the
+// configured region if absent (mirroring what `gcloud builds submit` does). Creation
+// needs storage.buckets.create on the caller's identity (roles/storage.admin); writing
+// objects into an already-present bucket only needs objectAdmin, so a precreated bucket
+// requires no extra permission.
+func (r *CloudRunner) ensureBucket(ctx context.Context, eff Config) error {
+	b := r.gcs.Bucket(eff.Bucket)
+	if _, err := b.Attrs(ctx); err == nil {
+		return nil
+	} else if !errors.Is(err, storage.ErrBucketNotExist) {
+		return err
+	}
+	attrs := &storage.BucketAttrs{
+		Location:                 eff.Region,
+		UniformBucketLevelAccess: storage.UniformBucketLevelAccess{Enabled: true},
+	}
+	if err := b.Create(ctx, eff.Project, attrs); err != nil {
+		return fmt.Errorf("create staging bucket %q: %w (grant the agent service account roles/storage.admin, or precreate the bucket)", eff.Bucket, err)
+	}
+	return nil
 }
 
 // uploadSource tars+gzips the demo_app source (with overlay files replacing/adding on-
