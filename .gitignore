@@ -11,6 +11,8 @@
 /demo_app/demo_app_run*
 *.test
 *.out
+# Delve / VS Code debug binaries (e.g. __debug_bin.exe1557790238 — trailing digits dodge *.exe)
+__debug_bin*
 
 # Node / frontend
 node_modules/
