@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import type { Investigation, Step } from "../types";
 import { investigateStream } from "../api";
 import { useAppData } from "../context/AppDataContext";
 import { useAutopilot, isActivePhase } from "../context/AutopilotContext";
 import { useToast } from "../context/ToastContext";
+import { useLocalStore } from "../context/LocalStoreContext";
 import { ProblemList } from "../components/ProblemList";
 import { InvestigationPanel } from "../components/Investigation";
 import { AgentSteps } from "../components/AgentSteps";
@@ -12,9 +13,16 @@ import { Pipeline } from "../components/Pipeline";
 import { TestConsole } from "../components/TestConsole";
 import { Skeleton, EmptyState, ErrorState } from "../components/States";
 
+type SortBy = "recent" | "severity" | "impact";
+type KindFilter = "all" | "error" | "performance";
+
+// More-severe severities sort first under "severity".
+const SEV_RANK: Record<string, number> = { AVAILABILITY: 0, ERROR: 1, RESOURCE: 2, CUSTOM: 3 };
+
 // Problems master-detail. The selected problem comes from the URL (/problems/:id),
 // so investigations are deep-linkable. Investigation runs on demand (not auto) so a
-// shared link doesn't spend an agent run unexpectedly.
+// shared link doesn't spend an agent run unexpectedly. Dismissals and prior results
+// are persisted in the browser (LocalStoreContext) so they survive a refresh.
 export function ProblemsPage() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -30,20 +38,72 @@ export function ProblemsPage() {
   } = useAppData();
   const toast = useToast();
   const { runs, cancel } = useAutopilot();
+  const {
+    isDismissed,
+    dismiss,
+    restore,
+    clearDismissed,
+    saveRun,
+    latestInvestigation,
+    latestPipeline,
+    statusMap,
+  } = useLocalStore();
 
   const [result, setResult] = useState<Investigation | null>(null);
   const [steps, setSteps] = useState<Step[]>([]);
   const [investigating, setInvestigating] = useState(false);
 
+  // List management state.
+  const [query, setQuery] = useState("");
+  const [severityFilter, setSeverityFilter] = useState("all");
+  const [kindFilter, setKindFilter] = useState<KindFilter>("all");
+  const [sortBy, setSortBy] = useState<SortBy>("recent");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [showHidden, setShowHidden] = useState(false);
+  const [lastDismissed, setLastDismissed] = useState<string[]>([]);
+
   const selectedId = id ?? null;
   const run = selectedId ? runs[selectedId] : undefined;
   const autoActive = run ? isActivePhase(run.phase) : false;
 
-  // Reset the detail view when the selected problem changes.
+  const activeProblems = useMemo(() => problems.filter((p) => !isDismissed(p.id)), [problems, isDismissed]);
+  const hiddenProblems = useMemo(() => problems.filter((p) => isDismissed(p.id)), [problems, isDismissed]);
+  const severities = useMemo(
+    () => Array.from(new Set(activeProblems.map((p) => p.severity))),
+    [activeProblems],
+  );
+
+  // Active list after search + filter + sort.
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = activeProblems.filter((p) => {
+      if (severityFilter !== "all" && p.severity !== severityFilter) return false;
+      if (kindFilter !== "all" && (p.kind ?? "error") !== kindFilter) return false;
+      if (q && !`${p.title} ${p.entity} ${p.id}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+    return [...list].sort((a, b) => {
+      if (sortBy === "impact") return (b.affectedUsers ?? 0) - (a.affectedUsers ?? 0);
+      if (sortBy === "severity") {
+        const r = (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9);
+        if (r !== 0) return r;
+      }
+      return new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime();
+    });
+  }, [activeProblems, query, severityFilter, kindFilter, sortBy]);
+
+  // Restore-on-refresh: re-hydrate a previously cached investigation for the
+  // selected problem (or clear the detail view when there's nothing cached).
   useEffect(() => {
-    setResult(null);
-    setSteps([]);
-  }, [selectedId]);
+    const cached = selectedId ? latestInvestigation(selectedId) : undefined;
+    if (cached?.investigation) {
+      setResult(cached.investigation);
+      setSteps(cached.steps ?? []);
+    } else {
+      setResult(null);
+      setSteps([]);
+    }
+  }, [selectedId, latestInvestigation]);
 
   async function onInvestigate() {
     if (!selectedId) return;
@@ -51,9 +111,23 @@ export function ProblemsPage() {
     setStreaming(true);
     setSteps([]);
     setResult(null);
+    const collected: Step[] = [];
     try {
-      const inv = await investigateStream(selectedId, (s) => setSteps((prev) => [...prev, s]));
+      const inv = await investigateStream(selectedId, (s) => {
+        collected.push(s);
+        setSteps((prev) => [...prev, s]);
+      });
       setResult(inv);
+      const p = problems.find((x) => x.id === selectedId);
+      saveRun({
+        problemId: selectedId,
+        title: p?.title,
+        kind: p?.kind,
+        type: "investigation",
+        investigation: inv,
+        steps: collected,
+        status: "ok",
+      });
       reloadHistory();
       toast.success("Investigation complete");
     } catch (e) {
@@ -64,7 +138,36 @@ export function ProblemsPage() {
     }
   }
 
+  function toggleSelect(pid: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(pid)) next.delete(pid);
+      else next.add(pid);
+      return next;
+    });
+  }
+
+  function handleDismiss(ids: string[]) {
+    if (ids.length === 0) return;
+    dismiss(ids);
+    setLastDismissed(ids);
+    setSelected(new Set());
+    toast.success(ids.length === 1 ? "Dismissed 1 problem" : `Dismissed ${ids.length} problems`);
+  }
+
+  function handleRestore(ids: string[]) {
+    restore(ids);
+    setLastDismissed((prev) => prev.filter((x) => !ids.includes(x)));
+  }
+
+  function clearFilters() {
+    setQuery("");
+    setSeverityFilter("all");
+    setKindFilter("all");
+  }
+
   const selectedProblem = problems.find((p) => p.id === selectedId);
+  const listError = problemsError && problems.length === 0;
 
   return (
     <>
@@ -77,28 +180,158 @@ export function ProblemsPage() {
 
       <div className="layout">
         <div className="problems-col">
-          {problemsLoading ? (
-            <aside className="problems">
+          <aside className="problems">
+            <div className="problems-head">
               <h2>Dynatrace problems</h2>
+              {!problemsLoading && !listError && (
+                <button
+                  className={`ghost-btn hidden-toggle${showHidden ? " active" : ""}`}
+                  onClick={() => {
+                    setShowHidden((s) => !s);
+                    setSelected(new Set());
+                  }}
+                  disabled={!showHidden && hiddenProblems.length === 0}
+                  title="Show dismissed problems"
+                >
+                  {showHidden ? "← Active" : `Hidden (${hiddenProblems.length})`}
+                </button>
+              )}
+            </div>
+
+            {!showHidden && lastDismissed.length > 0 && (
+              <div className="undo-bar">
+                <span>Dismissed {lastDismissed.length}.</span>
+                <button className="link-btn" onClick={() => handleRestore(lastDismissed)}>
+                  Undo
+                </button>
+              </div>
+            )}
+
+            {problemsLoading ? (
               <Skeleton count={3} />
-            </aside>
-          ) : problemsError && problems.length === 0 ? (
-            <aside className="problems">
-              <h2>Dynatrace problems</h2>
+            ) : listError ? (
               <ErrorState message="Couldn't reach the backend." onRetry={refreshProblems} />
-            </aside>
-          ) : problems.length === 0 ? (
-            <aside className="problems">
-              <h2>Dynatrace problems</h2>
+            ) : showHidden ? (
+              hiddenProblems.length === 0 ? (
+                <EmptyState title="Nothing hidden" message="You haven't dismissed any problems." />
+              ) : (
+                <>
+                  <div className="problems-toolbar">
+                    <button
+                      className="ghost-btn"
+                      onClick={() => {
+                        clearDismissed();
+                        setLastDismissed([]);
+                      }}
+                    >
+                      Restore all ({hiddenProblems.length})
+                    </button>
+                  </div>
+                  <ProblemList
+                    problems={hiddenProblems}
+                    selectedId={selectedId}
+                    onSelect={(pid) => navigate(`/problems/${encodeURIComponent(pid)}`)}
+                    statusMap={statusMap}
+                    showHidden
+                    selected={selected}
+                    onToggleSelect={toggleSelect}
+                    onDismiss={(pid) => handleDismiss([pid])}
+                    onRestore={(pid) => handleRestore([pid])}
+                  />
+                </>
+              )
+            ) : activeProblems.length === 0 ? (
               <EmptyState title="No open problems" message="Nothing to investigate right now." />
-            </aside>
-          ) : (
-            <ProblemList
-              problems={problems}
-              selectedId={selectedId}
-              onSelect={(pid) => navigate(`/problems/${encodeURIComponent(pid)}`)}
-            />
-          )}
+            ) : (
+              <>
+                <div className="problems-toolbar">
+                  <input
+                    className="filter-input"
+                    type="search"
+                    placeholder="Search problems…"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                  />
+                  <select
+                    className="filter-select"
+                    value={severityFilter}
+                    onChange={(e) => setSeverityFilter(e.target.value)}
+                    aria-label="Filter by severity"
+                  >
+                    <option value="all">All severities</option>
+                    {severities.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="filter-select"
+                    value={kindFilter}
+                    onChange={(e) => setKindFilter(e.target.value as KindFilter)}
+                    aria-label="Filter by kind"
+                  >
+                    <option value="all">All kinds</option>
+                    <option value="error">Errors</option>
+                    <option value="performance">Performance</option>
+                  </select>
+                  <select
+                    className="filter-select"
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value as SortBy)}
+                    aria-label="Sort problems"
+                  >
+                    <option value="recent">Newest</option>
+                    <option value="severity">Severity</option>
+                    <option value="impact">Most affected</option>
+                  </select>
+                  <button
+                    className="link-btn clear-all"
+                    onClick={() => handleDismiss(visible.map((p) => p.id))}
+                    disabled={visible.length === 0}
+                  >
+                    Clear all
+                  </button>
+                </div>
+
+                {selected.size > 0 && (
+                  <div className="bulk-bar">
+                    <span>{selected.size} selected</span>
+                    <button className="link-btn" onClick={() => handleDismiss([...selected])}>
+                      Dismiss selected
+                    </button>
+                    <button className="link-btn" onClick={() => setSelected(new Set())}>
+                      Cancel
+                    </button>
+                  </div>
+                )}
+
+                {visible.length === 0 ? (
+                  <EmptyState
+                    title="No matches"
+                    message="No problems match your filters."
+                    action={
+                      <button className="ghost-btn" onClick={clearFilters}>
+                        Clear filters
+                      </button>
+                    }
+                  />
+                ) : (
+                  <ProblemList
+                    problems={visible}
+                    selectedId={selectedId}
+                    onSelect={(pid) => navigate(`/problems/${encodeURIComponent(pid)}`)}
+                    statusMap={statusMap}
+                    showHidden={false}
+                    selected={selected}
+                    onToggleSelect={toggleSelect}
+                    onDismiss={(pid) => handleDismiss([pid])}
+                    onRestore={(pid) => handleRestore([pid])}
+                  />
+                )}
+              </>
+            )}
+          </aside>
         </div>
 
         <main className="content">
@@ -138,31 +371,47 @@ export function ProblemsPage() {
             </section>
           )}
 
-          {selectedId &&
-            (selectedProblem || problems.length === 0) &&
-            !result &&
-            !autoActive && (
-              <div className="investigate-cta">
-                <p>
-                  {run
-                    ? "Take over manually — investigate and propose a fix yourself."
-                    : "Investigate "}
-                  {!run && <code>{selectedId}</code>}
-                  {!run &&
-                    " — the agent pulls the problem from Dynatrace, correlates the stack trace to source, and proposes a fix."}
-                </p>
-                <button className="investigate-btn" onClick={onInvestigate} disabled={investigating}>
-                  {investigating ? "Investigating…" : "Investigate with AI"}
-                </button>
-              </div>
-            )}
+          {selectedId && (selectedProblem || problems.length === 0) && !result && !autoActive && (
+            <div className="investigate-cta">
+              <p>
+                {run
+                  ? "Take over manually — investigate and propose a fix yourself."
+                  : "Investigate "}
+                {!run && <code>{selectedId}</code>}
+                {!run &&
+                  " — the agent pulls the problem from Dynatrace, correlates the stack trace to source, and proposes a fix."}
+              </p>
+              <button className="investigate-btn" onClick={onInvestigate} disabled={investigating}>
+                {investigating ? "Investigating…" : "Investigate with AI"}
+              </button>
+            </div>
+          )}
 
           {steps.length > 0 && <AgentSteps steps={steps} title="Agent activity" />}
 
           {result && (
             <>
               <InvestigationPanel data={result} onApproved={reloadHistory} />
-              <Pipeline available={consoleAvailable} problemId={result.problemId} onComplete={reloadHistory} />
+              <Pipeline
+                key={result.problemId}
+                available={consoleAvailable}
+                problemId={result.problemId}
+                initialResult={latestPipeline(result.problemId)?.pipeline ?? null}
+                onComplete={(r) => {
+                  if (r) {
+                    const p = problems.find((x) => x.id === result.problemId);
+                    saveRun({
+                      problemId: result.problemId,
+                      title: p?.title,
+                      kind: p?.kind,
+                      type: "pipeline",
+                      pipeline: r,
+                      status: r.success ? "ok" : "failed",
+                    });
+                  }
+                  reloadHistory();
+                }}
+              />
             </>
           )}
         </main>

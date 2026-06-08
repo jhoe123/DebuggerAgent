@@ -1,4 +1,5 @@
 import type { AutopilotPhase, Problem } from "../types";
+import type { ProblemStatus } from "../lib/localStore";
 import { useAutopilot, isActivePhase } from "../context/AutopilotContext";
 
 const PHASE: Record<AutopilotPhase, { label: string; icon: string }> = {
@@ -23,23 +24,37 @@ function kb(bytes?: number): string | null {
   return bytes > 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
+// Renders the problem cards only — the parent (ProblemsPage) owns the <aside>,
+// header, and filter toolbar so it can switch between the active and hidden lists.
 export function ProblemList({
   problems,
   selectedId,
   onSelect,
+  statusMap,
+  showHidden,
+  selected,
+  onToggleSelect,
+  onDismiss,
+  onRestore,
 }: {
   problems: Problem[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  statusMap: Record<string, ProblemStatus>;
+  showHidden: boolean;
+  selected: Set<string>;
+  onToggleSelect: (id: string) => void;
+  onDismiss: (id: string) => void;
+  onRestore: (id: string) => void;
 }) {
   const { runs, cancel } = useAutopilot();
   return (
-    <aside className="problems">
-      <h2>Dynatrace problems</h2>
+    <div className="problem-cards">
       {problems.map((p) => {
         const occ = p.occurrences ?? p.affectedUsers;
         const scanned = kb(p.grailScannedBytes);
         const run = runs[p.id];
+        const st = statusMap[p.id];
         return (
           <div
             key={p.id}
@@ -50,8 +65,44 @@ export function ProblemList({
             onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onSelect(p.id)}
           >
             <div className="problem-top">
+              {!showHidden && (
+                <input
+                  type="checkbox"
+                  className="problem-check"
+                  checked={selected.has(p.id)}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={() => onToggleSelect(p.id)}
+                  aria-label={`Select ${p.title}`}
+                />
+              )}
               <span className={`badge sev-${p.severity.toLowerCase()}`}>{p.severity}</span>
               <span className="problem-since">{sinceLabel(p.startedAt)}</span>
+              <span className="problem-actions">
+                {showHidden ? (
+                  <button
+                    className="problem-restore"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRestore(p.id);
+                    }}
+                    title="Restore to the active list"
+                  >
+                    ↩ Restore
+                  </button>
+                ) : (
+                  <button
+                    className="problem-dismiss"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDismiss(p.id);
+                    }}
+                    title="Dismiss (hide) this problem"
+                    aria-label={`Dismiss ${p.title}`}
+                  >
+                    ✕
+                  </button>
+                )}
+              </span>
             </div>
             <div className="problem-title">{p.title}</div>
             <div className="problem-meta">
@@ -83,6 +134,14 @@ export function ProblemList({
               )}
               {p.metric && <span className="mini-chip" title="Latency percentile">{p.metric}</span>}
               {scanned && <span className="mini-chip" title="Dynatrace Grail bytes scanned">Grail: {scanned}</span>}
+              {/* One prioritized local-status chip (patched ▸ failed ▸ investigated) to keep cards clean. */}
+              {st?.patched ? (
+                <span className="mini-chip status-patched" title="A remediation run succeeded">patched ✓</span>
+              ) : st?.failed ? (
+                <span className="mini-chip status-failed" title="A remediation run failed">failed ✗</span>
+              ) : st?.investigated ? (
+                <span className="mini-chip status-investigated" title="Investigated locally">investigated ✓</span>
+              ) : null}
               {p.dynatraceUrl && (
                 <a
                   className="mini-chip link"
@@ -98,6 +157,6 @@ export function ProblemList({
           </div>
         );
       })}
-    </aside>
+    </div>
   );
 }

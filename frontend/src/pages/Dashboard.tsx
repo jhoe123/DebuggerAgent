@@ -4,11 +4,13 @@ import type { HistoryEntry } from "../types";
 import { listHistory } from "../api";
 import { useAppData } from "../context/AppDataContext";
 import { useAutopilot } from "../context/AutopilotContext";
+import { useLocalStore } from "../context/LocalStoreContext";
 import { Skeleton } from "../components/States";
 
 export function Dashboard() {
   const { problems, problemsLoading, consoleAvailable, mock, historyKey } = useAppData();
   const { config: apConfig, activeCount } = useAutopilot();
+  const { isDismissed } = useLocalStore();
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [histLoading, setHistLoading] = useState(true);
 
@@ -23,8 +25,10 @@ export function Dashboard() {
     };
   }, [historyKey]);
 
-  const perf = problems.filter((p) => p.kind === "performance").length;
-  const errors = problems.length - perf;
+  // Exclude problems the user has dismissed so the cards match the visible list.
+  const open = problems.filter((p) => !isDismissed(p.id));
+  const perf = open.filter((p) => p.kind === "performance").length;
+  const errors = open.length - perf;
 
   return (
     <>
@@ -32,7 +36,7 @@ export function Dashboard() {
       <p className="page-sub">Your AI SRE at a glance.</p>
 
       <div className="dash-cards">
-        <StatCard label="Open problems" value={problems.length} to="/problems" loading={problemsLoading} />
+        <StatCard label="Open problems" value={open.length} to="/problems" loading={problemsLoading} />
         <StatCard label="Errors" value={errors} to="/problems" loading={problemsLoading} accent="del" />
         <StatCard label="Performance" value={perf} to="/problems" loading={problemsLoading} accent="warn" />
         <StatCard label="Changes logged" value={history.length} to="/history" loading={histLoading} />
