@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
@@ -25,6 +26,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/patchpilot/backend/internal/dynatrace"
+	"github.com/patchpilot/backend/internal/lang"
 	"github.com/patchpilot/backend/internal/tools"
 )
 
@@ -67,6 +69,16 @@ type Service struct {
 
 	builder   *runner.Runner
 	artifacts *tools.ArtifactStore
+
+	langMu sync.RWMutex // guards lang (re-detected by SetSourceRoot at runtime)
+	lang   lang.Profile // language profile of the current source root (drives prompt hints)
+}
+
+// language snapshots the current language profile under the read lock.
+func (s *Service) language() lang.Profile {
+	s.langMu.RLock()
+	defer s.langMu.RUnlock()
+	return s.lang
 }
 
 // newReadSourceTool builds the read_source FunctionTool over a sandbox. It is
@@ -221,6 +233,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		runner: r, patches: patches, sandbox: sb,
 		instrument: ir, instStore: instStore,
 		builder: br, artifacts: artifacts,
+		lang: lang.Detect(cfg.SourceRoot),
 	}, nil
 }
 
@@ -234,7 +247,14 @@ func (s *Service) SetSourceRoot(root string) error {
 	if s.sandbox == nil {
 		return fmt.Errorf("sandbox unavailable")
 	}
-	return s.sandbox.SetRoot(root)
+	if err := s.sandbox.SetRoot(root); err != nil {
+		return err
+	}
+	// The connected clone may be a different language than the original SOURCE_ROOT.
+	s.langMu.Lock()
+	s.lang = lang.Detect(root)
+	s.langMu.Unlock()
+	return nil
 }
 
 // Investigate runs the agent. It streams text chunks to onText (for SSE) and
@@ -441,8 +461,9 @@ exact steps once each, in order:
    investigation, the user request gives you the latency query to run instead (duration is in
    nanoseconds) — use that to find the slow operation and its magnitude.
 2. read_source for the file named in the stack trace. The path is RELATIVE to the app source
-   root: use the BASE NAME (".../demo_app/main.go:99" -> read_source path "main.go"). Read a
-   WINDOW around the stack-trace line, not the whole file: offset = max(1, line-30), limit = 60.
+   root: use the BASE NAME of the trace frame's file, whatever the language (".../app/server.go:99"
+   -> "server.go"; ".../app/server.py:99" -> "server.py"). Read a WINDOW around the stack-trace
+   line, not the whole file: offset = max(1, line-30), limit = 60.
    Check total_lines; if the bug spans more, widen the window or pass query to search for the
    responsible function/symbol. Do NOT read an entire large file.
 3. propose_patch (file, unified_diff, patched_content, rationale). patched_content must be the

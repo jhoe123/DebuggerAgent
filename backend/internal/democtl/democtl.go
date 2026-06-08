@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/patchpilot/backend/internal/api"
+	"github.com/patchpilot/backend/internal/lang"
 	"github.com/patchpilot/backend/internal/settings"
 	"github.com/patchpilot/backend/internal/tools"
 )
@@ -89,6 +90,7 @@ type Controller struct {
 	demoDir  string // <repo>/demo_app
 	demoURL  string // http://localhost:9090
 	binPath  string
+	lang     lang.Profile // language profile detected from demoDir (re-detected on SetSourceRoot)
 	otlpEnv  []string
 	patches  *tools.PatchStore
 	testGen  TestGenFunc     // optional: detect-or-generate the regression test (set by server)
@@ -111,6 +113,14 @@ func (c *Controller) SetBuildGenerator(fn BuildGenFunc) { c.buildGen = fn }
 // SetSettings wires the runtime pipeline settings store (read for the health-check URL).
 func (c *Controller) SetSettings(s *settings.Store) { c.settings = s }
 
+// Language reports the language profile detected for the current source root
+// ("go" | "python"), for operator-facing logging.
+func (c *Controller) Language() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return string(c.lang.ID())
+}
+
 // SetSourceRoot re-points the controller at a newly-connected Git source clone. The
 // clone is its own git repo with the app at its root, so demoDir and repoRoot both
 // become dir (apply/build/run operate on the clone). Safe to call at runtime.
@@ -124,6 +134,8 @@ func (c *Controller) SetSourceRoot(dir string) {
 	c.demoDir = abs
 	c.repoRoot = abs
 	c.binPath = filepath.Join(abs, "demo_app_run"+exeSuffix())
+	// The connected clone may be a different language than the original SOURCE_ROOT.
+	c.lang = lang.Detect(abs)
 }
 
 // New builds a controller. sourceRoot is the demo_app dir (SOURCE_ROOT).
@@ -134,6 +146,7 @@ func New(sourceRoot, demoURL, dtEnvironment, dtAPIToken string, patches *tools.P
 		demoDir:  demoDir,
 		demoURL:  strings.TrimRight(demoURL, "/"),
 		binPath:  filepath.Join(demoDir, "demo_app_run"+exeSuffix()),
+		lang:     lang.Detect(demoDir),
 		patches:  patches,
 		http:     &http.Client{Timeout: 10 * time.Second},
 	}
@@ -172,7 +185,8 @@ func (c *Controller) launch() error {
 		_, _ = c.proc.Process.Wait()
 		c.proc = nil
 	}
-	cmd := exec.Command(c.binPath)
+	run := c.lang.RunCommand(c.demoDir, c.binPath)
+	cmd := exec.Command(run.Name, run.Args...)
 	cmd.Dir = c.demoDir
 	cmd.Env = append(os.Environ(), c.otlpEnv...)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
@@ -503,14 +517,12 @@ func (c *Controller) restore(ctx context.Context) error {
 	return c.launch()
 }
 
-// vet compiles every package (including test files) and runs go vet's static
-// checks. It is the instrumentation gate: it catches broken AI-generated edits
-// (bad imports, type errors, suspicious constructs) without being blocked by
-// demo_app's deliberately-failing seeded-bug regression tests, which assert FIXED
-// behavior and are out of scope for adding telemetry.
+// vet is the compile/static-check gate (Go: `go vet ./...`; Python: byte-compile every
+// module). It catches broken AI-generated edits (bad imports, type errors, syntax errors)
+// without being blocked by demo_app's deliberately-failing seeded-bug regression tests,
+// which assert FIXED behavior and are out of scope for adding telemetry.
 func (c *Controller) vet(ctx context.Context) (bool, string) {
-	out, err := c.goCmd(ctx, "vet", "./...")
-	return err == nil, out
+	return c.runCmds(ctx, c.lang.VetCommands(c.demoDir))
 }
 
 func sortedFileKeys(files map[string]string) []string {
@@ -552,17 +564,17 @@ func scenarioFilter(scenario string) string {
 	}
 }
 
-// runTest runs a single named test (scoped with -run so other deliberately-seeded
-// bugs' failing tests don't block this gate).
+// runTest runs the regression gate scoped to runFilter (Go: `go test -run`; Python:
+// `pytest -k`), so other deliberately-seeded bugs' failing tests don't block this gate.
 func (c *Controller) runTest(ctx context.Context, runFilter string) (bool, string) {
-	out, err := c.goCmd(ctx, "test", "-run", runFilter, "./...")
-	return err == nil, out
+	return c.runCmds(ctx, c.lang.TestCommands(c.demoDir, runFilter))
 }
 
 // looksLikeBuildError distinguishes a generated test that doesn't COMPILE (worth one
 // agent repair turn) from one that compiles but FAILS its assertion (a real gate fail).
-func looksLikeBuildError(out string) bool {
-	for _, s := range []string{"build failed", "[build failed]", "cannot use", "undefined:", "syntax error", "expected ", "imported and not used", "redeclared", "does not implement"} {
+// The markers are language-specific (see lang.Profile.BuildErrorMarkers).
+func (c *Controller) looksLikeBuildError(out string) bool {
+	for _, s := range c.lang.BuildErrorMarkers() {
 		if strings.Contains(out, s) {
 			return true
 		}
@@ -622,12 +634,12 @@ func (c *Controller) resolveTest(ctx context.Context, opts Options, step func(ap
 		} else {
 			step(api.Step{Stage: "test", Status: "info", Message: "Reusing existing test " + runName})
 		}
-		step(api.Step{Stage: "test", Status: "running", Message: "Running go test -run " + runName})
+		step(api.Step{Stage: "test", Status: "running", Message: "Running regression test: " + runName})
 		ok, out := c.runTest(ctx, runName)
 		if ok {
 			return true, out
 		}
-		if len(files) > 0 && attempt < maxRepairAttempts && looksLikeBuildError(out) {
+		if len(files) > 0 && attempt < maxRepairAttempts && c.looksLikeBuildError(out) {
 			attempt++
 			step(api.Step{Stage: "debug", Status: "running", Message: fmt.Sprintf("Generated test didn't compile — agent repairing (attempt %d/%d)", attempt, maxRepairAttempts)})
 			errOut = out
@@ -671,8 +683,7 @@ func (c *Controller) resolveTestBatch(ctx context.Context, opts Options, scenari
 }
 
 func (c *Controller) build(ctx context.Context) (bool, string) {
-	out, err := c.goCmd(ctx, "build", "-o", c.binPath, ".")
-	return err == nil, out
+	return c.runCmds(ctx, c.lang.BuildCommands(c.demoDir, c.binPath))
 }
 
 // resolveBuild runs the build stage: a detected build script (build.ps1/build.sh/
@@ -704,17 +715,20 @@ func (c *Controller) resolveBuild(ctx context.Context, opts Options, step func(a
 			if !ok {
 				return false, out
 			}
-			// The script may target a frontend bundle / image only; make sure the
-			// local-deploy binary exists so the deploy (restart) step can launch it.
-			if _, err := os.Stat(c.binPath); err != nil {
-				if bok, bout := c.build(ctx); !bok {
-					return false, out + "\n" + bout
+			// The script may target a frontend bundle / image only; for languages that
+			// produce a binary (Go), make sure the local-deploy binary exists so the deploy
+			// (restart) step can launch it. Python launches its source directly, so skip.
+			if c.lang.ProducesBinary() {
+				if _, err := os.Stat(c.binPath); err != nil {
+					if bok, bout := c.build(ctx); !bok {
+						return false, out + "\n" + bout
+					}
 				}
 			}
 			return true, out
 		}
 	}
-	step(api.Step{Stage: "build", Status: "running", Message: "Building demo_app (go build)"})
+	step(api.Step{Stage: "build", Status: "running", Message: "Building demo_app (" + string(c.lang.ID()) + ")"})
 	return c.build(ctx)
 }
 
@@ -746,11 +760,23 @@ func (c *Controller) runBuildScript(ctx context.Context, script string) (bool, s
 	return err == nil, string(b)
 }
 
-func (c *Controller) goCmd(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "go", args...)
-	cmd.Dir = c.demoDir
-	b, err := cmd.CombinedOutput()
-	return string(b), err
+// runCmds runs a sequence of language commands in demoDir, concatenating their combined
+// output and stopping at the first failure. Returns (allSucceeded, output). Used for the
+// build/test/vet gates, which may be a single command (Go) or several (Python: venv →
+// pip install → compileall).
+func (c *Controller) runCmds(ctx context.Context, cmds []lang.Command) (bool, string) {
+	var sb strings.Builder
+	for _, cm := range cmds {
+		cmd := exec.CommandContext(ctx, cm.Name, cm.Args...)
+		cmd.Dir = c.demoDir
+		b, err := cmd.CombinedOutput()
+		sb.Write(b)
+		if err != nil {
+			fmt.Fprintf(&sb, "\n%s %s: %v\n", cm.Name, strings.Join(cm.Args, " "), err)
+			return false, sb.String()
+		}
+	}
+	return true, sb.String()
 }
 
 func (c *Controller) git(ctx context.Context, args ...string) (string, error) {

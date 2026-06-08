@@ -41,7 +41,7 @@ type Store struct {
 // New returns a Store seeded from env-derived defaults, filling sensible blanks.
 func New(seed Config) *Store {
 	if seed.WorkingBranch == "" {
-		seed.WorkingBranch = "main"
+		seed.WorkingBranch = "patchpilot"
 	}
 	if seed.BranchPrefix == "" {
 		seed.BranchPrefix = "patchpilot/fix-"

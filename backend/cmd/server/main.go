@@ -82,7 +82,7 @@ func main() {
 			log.Printf("WARNING: demo controller start: %v", err)
 		} else {
 			defer demo.Stop()
-			log.Printf("Test Console + auto-remediation ENABLED (backend owns demo_app at %s)", cfg.DemoAppURL)
+			log.Printf("Test Console + auto-remediation ENABLED (backend owns demo_app at %s, detected language: %s)", cfg.DemoAppURL, demo.Language())
 		}
 	}
 	// The builder agent's lazy test/build artifact resolvers, shared by both runners:
@@ -122,7 +122,7 @@ func main() {
 			defer cloud.Close()
 			runner = cloud
 			cloudRunner = cloud
-			log.Printf("Cloud Build remediation ENABLED (deploy %q to Cloud Run in %s) — protect this endpoint (it deploys on approval)", cfg.DemoRunService, cfg.CloudRunRegion)
+			log.Printf("Cloud Build remediation ENABLED (deploy %q to Cloud Run in %s, detected language: %s) — protect this endpoint (it deploys on approval)", cfg.DemoRunService, cfg.CloudRunRegion, cloud.Language())
 		}
 	}
 
@@ -304,7 +304,7 @@ func (h *handlers) investigate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
 	defer cancel()
 
-	final, patch, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, agent.InvestigatePrompt(req.ProblemID), nil)
+	final, patch, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, h.agent.InvestigatePrompt(req.ProblemID), nil)
 	if err != nil {
 		log.Printf("investigate %q error: %v", req.ProblemID, err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -379,7 +379,7 @@ func (h *handlers) investigateStream(w http.ResponseWriter, r *http.Request) {
 	onStep := func(stage, status, message string) {
 		sse.step(api.Step{Stage: stage, Status: status, Message: message})
 	}
-	final, patch, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, agent.InvestigatePrompt(req.ProblemID), onStep)
+	final, patch, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, h.agent.InvestigatePrompt(req.ProblemID), onStep)
 	if err != nil {
 		log.Printf("investigate(stream) %q error: %v", req.ProblemID, err)
 		sse.event("error", map[string]string{"error": err.Error()})

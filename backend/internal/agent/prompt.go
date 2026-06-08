@@ -12,8 +12,10 @@ func SplitProblemID(id string) (kind, svc string) {
 }
 
 // InvestigatePrompt builds the user prompt for an investigation, branching on the
-// problem kind (error vs performance). Shared by the HTTP handler and the autopilot.
-func InvestigatePrompt(problemID string) string {
+// problem kind (error vs performance). The compile-correctness reminder is language-aware
+// (Go must drop now-unused imports; Python has no such hard error). Shared by the HTTP
+// handler and the autopilot.
+func (s *Service) InvestigatePrompt(problemID string) string {
 	kind, svc := SplitProblemID(problemID)
 	if kind == "performance" {
 		return "Investigate the PERFORMANCE problem for the Dynatrace service \"" + svc +
@@ -22,10 +24,9 @@ func InvestigatePrompt(problemID string) string {
 			"p95 = percentile(duration, 95), c = count(), by:{span.name} | sort p95 desc | limit 1` " +
 			"(duration is in nanoseconds). Read the source for that operation, find the code that makes " +
 			"it slow, call propose_patch with an optimization (change that function; keep the rest of the " +
-			"file unchanged EXCEPT that the patched file MUST still compile — if your change removes the " +
-			"last use of an imported package, also remove that import so there is no \"imported and not " +
-			"used\" error), then return the final JSON object. rootCause.what should name the " +
-			"slow operation and the cause; suggestedTest should assert the latency is now under budget."
+			"file unchanged" + s.language().UnusedImportHint() + "), then return the final JSON object. " +
+			"rootCause.what should name the slow operation and the cause; suggestedTest should assert " +
+			"the latency is now under budget."
 	}
 	return "Investigate the production errors for the Dynatrace service \"" + svc +
 		"\". Query its recent error spans, read the offending source file, determine the root cause, " +

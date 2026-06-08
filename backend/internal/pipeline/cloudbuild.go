@@ -27,13 +27,13 @@ import (
 	cloudbuild "cloud.google.com/go/cloudbuild/apiv1/v2"
 	"cloud.google.com/go/cloudbuild/apiv1/v2/cloudbuildpb"
 	"cloud.google.com/go/storage"
-	"golang.org/x/tools/imports"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/patchpilot/backend/internal/api"
 	"github.com/patchpilot/backend/internal/democtl"
+	"github.com/patchpilot/backend/internal/lang"
 	"github.com/patchpilot/backend/internal/tools"
 )
 
@@ -56,9 +56,10 @@ type CloudRunner struct {
 	genTest  democtl.TestGenFunc
 	genBuild democtl.BuildGenFunc
 
-	mu     sync.RWMutex // guards cfg (SetSourceRoot mutates it) and synced
+	mu     sync.RWMutex // guards cfg (SetSourceRoot mutates it), lang and synced
 	cfg    Config
-	synced bool // whether THIS process has uploaded a full base yet (see Remediate)
+	lang   lang.Profile // language profile detected from cfg.SourceRoot (re-detected on SetSourceRoot)
+	synced bool         // whether THIS process has uploaded a full base yet (see Remediate)
 }
 
 // New constructs a CloudRunner. It dials the Cloud Build + Storage clients with ADC
@@ -87,8 +88,19 @@ func New(ctx context.Context, cfg Config, patches *tools.PatchStore, genTest dem
 	if err != nil {
 		return nil, fmt.Errorf("storage client: %w", err)
 	}
-	return &CloudRunner{cfg: cfg, cb: cb, gcs: gcs, patches: patches, genTest: genTest, genBuild: genBuild}, nil
+	return &CloudRunner{cfg: cfg, lang: lang.Detect(cfg.SourceRoot), cb: cb, gcs: gcs, patches: patches, genTest: genTest, genBuild: genBuild}, nil
 }
+
+// language snapshots the current language profile under the read lock (SetSourceRoot may
+// re-detect it concurrently when a Git source connects).
+func (r *CloudRunner) language() lang.Profile {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.lang
+}
+
+// Language reports the detected language ("go" | "python") for operator-facing logging.
+func (r *CloudRunner) Language() string { return string(r.language().ID()) }
 
 // Close releases the GCP clients.
 func (r *CloudRunner) Close() {
@@ -111,6 +123,8 @@ func (r *CloudRunner) SetSourceRoot(dir string) {
 	}
 	r.mu.Lock()
 	r.cfg.SourceRoot = abs
+	// The connected clone may be a different language than the original SOURCE_ROOT.
+	r.lang = lang.Detect(abs)
 	// A re-point changes what a full upload would contain, so the durable GCS base no
 	// longer reflects this runner's source — force the next deploy to re-sync it in full.
 	r.synced = false
@@ -314,11 +328,12 @@ func (r *CloudRunner) buildSpec(eff Config, object, imageRef, runName string, op
 	}
 
 	if opts.Test && runName != "" {
+		image, entrypoint, args := r.language().CloudTestStep(runName)
 		bsteps = append(bsteps, &cloudbuildpb.BuildStep{
 			Id:         "test",
-			Name:       "golang:1.25",
-			Entrypoint: "go",
-			Args:       []string{"test", "-run", runName, "./..."},
+			Name:       image,
+			Entrypoint: entrypoint,
+			Args:       args,
 		})
 	}
 	if opts.Build {
@@ -592,17 +607,17 @@ func (r *CloudRunner) fetchBuildErrors(ctx context.Context, eff Config, buildID 
 		raw, rerr := io.ReadAll(io.LimitReader(rc, 512*1024))
 		_ = rc.Close()
 		if rerr == nil && len(raw) > 0 {
-			return extractBuildErrors(string(raw))
+			return extractBuildErrors(string(raw), r.language().ErrorMarkers())
 		}
 	}
 	return ""
 }
 
 // extractBuildErrors pulls the meaningful failure lines out of a Cloud Build log —
-// compiler/test/tooling errors — keeping their "Step #N" prefix for context. If nothing
-// matches it returns the tail. The result is capped so it stays readable in the UI.
-func extractBuildErrors(log string) string {
-	markers := []string{".go:", "error:", "Error", "ERROR", "FAIL", "undefined:", "cannot ", "not used", "expected ", "panic:", "exit status", "non-zero status"}
+// compiler/test/tooling errors — keeping their "Step #N" prefix for context. markers are
+// the language-specific substrings that flag a failure line. If nothing matches it returns
+// the tail. The result is capped so it stays readable in the UI.
+func extractBuildErrors(log string, markers []string) string {
 	var hits []string
 	for _, ln := range strings.Split(log, "\n") {
 		t := strings.TrimRight(ln, "\r")
@@ -695,10 +710,11 @@ func (r *CloudRunner) uploadSource(ctx context.Context, eff Config, overlay map[
 	w := r.gcs.Bucket(eff.Bucket).Object(object).NewWriter(ctx)
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)
+	prof := r.language()
 
 	added := map[string]bool{}
 	writeEntry := func(rel string, content []byte) error {
-		content = tidyGoSource(rel, content)
+		content = prof.Tidy(rel, content)
 		hdr := &tar.Header{Name: filepath.ToSlash(rel), Mode: 0o644, Size: int64(len(content))}
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err
@@ -721,7 +737,7 @@ func (r *CloudRunner) uploadSource(ctx context.Context, eff Config, overlay map[
 			return rerr
 		}
 		rel = filepath.ToSlash(rel)
-		if skipSource(rel) {
+		if prof.SkipSource(rel) {
 			return nil
 		}
 		content, ok := overlay[rel]
@@ -762,37 +778,6 @@ func (r *CloudRunner) uploadSource(ctx context.Context, eff Config, overlay map[
 	return w.Close()
 }
 
-// tidyGoSource removes now-unused imports and gofmt-formats a Go file, repairing it on
-// the exact source uploaded to Cloud Build. An LLM patch that deletes the last use of an
-// imported package (e.g. dropping a time.Sleep in the perf fix) without removing the
-// import otherwise fails the in-build `go test` with "imported and not used"; this also
-// cleans agent-generated test files (the cloud runner has no local repair loop). Best-
-// effort: on a parse error the original bytes are returned unchanged.
-func tidyGoSource(rel string, content []byte) []byte {
-	if !strings.HasSuffix(rel, ".go") {
-		return content
-	}
-	out, err := imports.Process(rel, content, &imports.Options{Comments: true, TabIndent: true, TabWidth: 8})
-	if err != nil {
-		return content
-	}
-	return out
-}
-
-// skipSource excludes build artifacts and VCS data from the uploaded source.
-func skipSource(rel string) bool {
-	switch {
-	case strings.HasPrefix(rel, "web/node_modules/"),
-		strings.HasPrefix(rel, "web/dist/"),
-		strings.HasPrefix(rel, "web/.vite/"),
-		strings.HasPrefix(rel, ".git/"),
-		strings.HasPrefix(rel, "demo_app_run"),
-		strings.HasSuffix(rel, ".test"):
-		return true
-	}
-	return false
-}
-
 // baseExists reports whether base-source.tar.gz exists in GCS.
 func (r *CloudRunner) baseExists(ctx context.Context, eff Config) bool {
 	_, err := r.gcs.Bucket(eff.Bucket).Object("base-source.tar.gz").Attrs(ctx)
@@ -804,9 +789,10 @@ func (r *CloudRunner) uploadOverlayOnly(ctx context.Context, eff Config, overlay
 	w := r.gcs.Bucket(eff.Bucket).Object(object).NewWriter(ctx)
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)
+	prof := r.language()
 
 	writeEntry := func(rel string, content []byte) error {
-		content = tidyGoSource(rel, content)
+		content = prof.Tidy(rel, content)
 		hdr := &tar.Header{Name: filepath.ToSlash(rel), Mode: 0o644, Size: int64(len(content))}
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err

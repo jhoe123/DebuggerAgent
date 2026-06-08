@@ -173,7 +173,7 @@ func (e *Engine) process(parent context.Context, id string) {
 	onStep := func(stage, status, message string) {
 		e.appendStep(id, api.Step{Stage: stage, Status: status, Message: message})
 	}
-	_, patch, err := e.agent.Investigate(runCtx, "auto-"+id, agent.InvestigatePrompt(id), onStep)
+	_, patch, err := e.agent.Investigate(runCtx, "auto-"+id, e.agent.InvestigatePrompt(id), onStep)
 	if runCtx.Err() != nil {
 		e.markHalted(id)
 		return

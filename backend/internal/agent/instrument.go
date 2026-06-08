@@ -1,6 +1,7 @@
 // This file defines the instrumenter agent: a second ADK llmagent (built in
-// agent.New, sharing the model + source sandbox) that scans Go source for
-// Dynatrace/OpenTelemetry instrumentation gaps and applies human-selected edits.
+// agent.New, sharing the model + source sandbox) that scans source (Go or Python,
+// per the detected language) for Dynatrace/OpenTelemetry instrumentation gaps and
+// applies human-selected edits.
 //
 //   - read_source(...)               — same reader the investigator uses.
 //   - propose_instrumentation(...)   — records the candidate set (scan; review only).
@@ -16,6 +17,7 @@ import (
 	"google.golang.org/adk/tool/functiontool"
 
 	"github.com/patchpilot/backend/internal/api"
+	"github.com/patchpilot/backend/internal/lang"
 	"github.com/patchpilot/backend/internal/tools"
 )
 
@@ -81,7 +83,8 @@ func instrumentTools(sb *tools.Sandbox, store *tools.InstrumentStore) ([]tool.To
 	writeTool, err := functiontool.New(functiontool.Config{
 		Name: "write_instrumented_file",
 		Description: "Record the FULL patched content of one file with the selected instrumentation applied. " +
-			"Provide the project-relative file path and the COMPLETE new file content (valid, compilable Go, imports included). " +
+			"Provide the project-relative file path and the COMPLETE new file content (valid source for the project's " +
+			"language, with any imports you introduce included). " +
 			"Call once per affected file. This does NOT deploy — democtl writes/tests/builds it locally and rolls back on failure.",
 	}, func(_ tool.Context, args writeInstrumentedFileArgs) (writeInstrumentedFileResult, error) {
 		if err := store.SetPatchedFile(args.File, args.PatchedContent); err != nil {
@@ -104,7 +107,7 @@ func (s *Service) InstrumentSelected(ids []string) []api.InstrumentationCandidat
 // ScanInstrumentation runs the instrumenter in SCAN mode and returns the recorded
 // candidate set. Read-only (no writes), so it is safe to expose hosted.
 func (s *Service) ScanInstrumentation(ctx context.Context, sessionID string, onStep StepFunc) (*api.InstrumentationScan, error) {
-	if _, err := runRunner(ctx, s.instrument, sessionID, instrumentScanPrompt, onStep); err != nil {
+	if _, err := runRunner(ctx, s.instrument, sessionID, instrumentScanPrompt(s.language()), onStep); err != nil {
 		return nil, err
 	}
 	scan := s.instStore.Scan()
@@ -124,7 +127,7 @@ func (s *Service) ScanInstrumentation(ctx context.Context, sessionID string, onS
 // output (same session id keeps its prior context).
 func (s *Service) ApplyInstrumentation(ctx context.Context, sessionID string, selected []api.InstrumentationCandidate, repairErr string, onStep StepFunc) (map[string]string, error) {
 	s.instStore.ClearPatched()
-	if _, err := runRunner(ctx, s.instrument, sessionID, applyInstrumentationPrompt(selected, repairErr), onStep); err != nil {
+	if _, err := runRunner(ctx, s.instrument, sessionID, applyInstrumentationPrompt(s.language(), selected, repairErr), onStep); err != nil {
 		return nil, err
 	}
 	files := s.instStore.PatchedFiles()
@@ -134,12 +137,18 @@ func (s *Service) ApplyInstrumentation(ctx context.Context, sessionID string, se
 	return files, nil
 }
 
-const instrumentScanPrompt = "Scan the Go source under the project root for Dynatrace/OpenTelemetry " +
-	"instrumentation gaps and call propose_instrumentation once with the candidates you find."
+// instrumentScanPrompt builds the SCAN user message, naming the project's language and
+// injecting its OpenTelemetry conventions.
+func instrumentScanPrompt(prof lang.Profile) string {
+	return "Scan the " + prof.BuilderRole() + " source under the project root for Dynatrace/OpenTelemetry " +
+		"instrumentation gaps and call propose_instrumentation once with the candidates you find.\n\n" +
+		prof.OTelGuidance()
+}
 
 // applyInstrumentationPrompt builds the APPLY/repair user message from the selected
-// candidates and (optionally) the failing build/test output.
-func applyInstrumentationPrompt(selected []api.InstrumentationCandidate, repairErr string) string {
+// candidates and (optionally) the failing build/test output, with the language's
+// OpenTelemetry conventions injected.
+func applyInstrumentationPrompt(prof lang.Profile, selected []api.InstrumentationCandidate, repairErr string) string {
 	var b strings.Builder
 	if repairErr != "" {
 		b.WriteString("Your previous instrumentation did not build/test cleanly. Treat the output below as authoritative, " +
@@ -147,6 +156,8 @@ func applyInstrumentationPrompt(selected []api.InstrumentationCandidate, repairE
 		b.WriteString(repairErr)
 		b.WriteString("\n\n")
 	}
+	b.WriteString(prof.OTelGuidance())
+	b.WriteString("\n\n")
 	b.WriteString("Apply EXACTLY these selected instrumentation changes (and only these). For each affected file, read it " +
 		"in full, apply the changes, and call write_instrumented_file once with the COMPLETE new file content:\n")
 	for _, c := range selected {
@@ -163,20 +174,14 @@ func applyInstrumentationPrompt(selected []api.InstrumentationCandidate, repairE
 }
 
 const instrumentPrompt = `You are an observability engineer who adds Dynatrace-grade OpenTelemetry
-instrumentation to a Go service. You have three tools: read_source, propose_instrumentation,
-and write_instrumented_file.
-
-Follow the OpenTelemetry conventions already used in the codebase:
-- Package tracer:    var tracer = otel.Tracer("<service>")
-- Span per operation/handler:  ctx, span := tracer.Start(r.Context(), "GET /path"); defer span.End()
-- Error/panic recording:  span.RecordError(err, trace.WithStackTrace(true)); span.SetStatus(codes.Error, err.Error())
-- Useful attributes:  span.SetAttributes(attribute.Int(...), attribute.String(...))
-- Bootstrap (only if missing): an OTLP/HTTP exporter wired from OTEL_* env vars.
-Add any imports you introduce. Do NOT change code that is already instrumented.
+instrumentation to a service. You have three tools: read_source, propose_instrumentation,
+and write_instrumented_file. The task message states the codebase's language and its
+OpenTelemetry conventions — follow them, add any imports you introduce, and do NOT change
+code that is already instrumented.
 
 Your behaviour depends on the request:
 
-SCAN — read the Go sources under the project root and find spots that SHOULD emit telemetry
+SCAN — read the sources under the project root and find spots that SHOULD emit telemetry
 but don't: HTTP handlers without a span, operations without error recording, missing useful
 span attributes, or a missing tracer/exporter bootstrap. Call propose_instrumentation ONCE with
 up to 25 candidates (set truncated=true if you capped). For each candidate give file, symbol,
@@ -186,6 +191,6 @@ After the tool call, reply with the single word: done.
 
 APPLY — you are given a specific list of selected changes. For EACH file they touch: read the
 current file in full, apply EXACTLY those changes (and only those), and call
-write_instrumented_file(file, patched_content) with the COMPLETE, compilable new file content.
+write_instrumented_file(file, patched_content) with the COMPLETE, valid new file content.
 Call it once per file. If the user reports a build/test failure, fix your edits and call
 write_instrumented_file again with corrected content. After writing, reply: done.`

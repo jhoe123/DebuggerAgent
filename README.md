@@ -189,7 +189,7 @@ happens via the human confirm action** — preserving PatchPilot's human-in-the-
 
 Configure it in **Settings → Git source**:
 
-- **Repository URL** + **Working branch** (e.g. `main`) and a **fix branch prefix**.
+- **Repository URL** + **Working branch** (e.g. `patchpilot`) and a **fix branch prefix**.
 - **Auth token (HTTPS PAT)** — a secret; it is injected per git call (never written to
   `.git/config` or the URL) and **never returned by the API** (only a masked preview / "token set").
 - Toggles: **Create a branch per fix**, **Push to remote** (permission gate — off ⇒ all

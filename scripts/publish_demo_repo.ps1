@@ -15,7 +15,7 @@
 
 param(
   [string]$RemoteUrl,
-  [string]$Branch = "main",
+  [string]$Branch = "patchpilot",
   [string]$CommitMessage = "ShopFlow demo app (seeded bugs for PatchPilot)",
   [switch]$StageOnly
 )

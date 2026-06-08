@@ -16,6 +16,7 @@ import (
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 
+	"github.com/patchpilot/backend/internal/lang"
 	"github.com/patchpilot/backend/internal/tools"
 )
 
@@ -36,7 +37,7 @@ func builderTools(sb *tools.Sandbox, store *tools.ArtifactStore) ([]tool.Tool, e
 	}
 	writeTool, err := functiontool.New(functiontool.Config{
 		Name: "write_artifact",
-		Description: "Record the FULL content of one generated file (a Go *_test.go, a build script, a Dockerfile, or a " +
+		Description: "Record the FULL content of one generated file (a regression test, a build script, a Dockerfile, or a " +
 			"deploy script). Provide the project-relative path and the COMPLETE file content. Call once per file. This does " +
 			"NOT run or deploy anything — the pipeline writes it locally (or folds it into the cloud build source) and rolls back on failure.",
 	}, func(_ tool.Context, args writeArtifactArgs) (writeArtifactResult, error) {
@@ -51,15 +52,13 @@ func builderTools(sb *tools.Sandbox, store *tools.ArtifactStore) ([]tool.Tool, e
 	return []tool.Tool{readTool, writeTool}, nil
 }
 
-var (
-	runNameRE  = regexp.MustCompile(`RUN=([A-Za-z0-9_]+)`)
-	testFuncRE = regexp.MustCompile(`(?m)^func\s+(Test[A-Za-z0-9_]+)\s*\(`)
-)
+var runNameRE = regexp.MustCompile(`RUN=([A-Za-z0-9_]+)`)
 
-// TestResolution is the outcome of GenerateTest: the `go test -run` name to use as the
-// deploy gate, plus any newly generated test files (empty when an existing test is reused).
+// TestResolution is the outcome of GenerateTest: the test-selector name to run as the
+// deploy gate (go test -run <RunName> / pytest -k <RunName>), plus any newly generated
+// test files (empty when an existing test is reused).
 type TestResolution struct {
-	RunName string            // test function to run as the gate (go test -run <RunName>)
+	RunName string            // test to run as the gate (go test -run <RunName> / pytest -k <RunName>)
 	Files   map[string]string // generated file(s) to write; empty => an existing test is reused
 }
 
@@ -71,7 +70,8 @@ type TestResolution struct {
 // test gate, with the detection delegated to the agent.
 func (s *Service) GenerateTest(ctx context.Context, sessionID, file, rationale, repairErr string, onStep StepFunc) (TestResolution, error) {
 	s.artifacts.Clear()
-	final, err := runRunner(ctx, s.builder, sessionID, testGenPrompt(file, rationale, repairErr), onStep)
+	prof := s.language()
+	final, err := runRunner(ctx, s.builder, sessionID, testGenPrompt(prof, file, rationale, repairErr), onStep)
 	if err != nil {
 		return TestResolution{}, err
 	}
@@ -80,9 +80,10 @@ func (s *Service) GenerateTest(ctx context.Context, sessionID, file, rationale, 
 	if m := runNameRE.FindStringSubmatch(final); m != nil {
 		run = m[1]
 	}
-	if run == "" { // fall back to the Test func name in a generated file
+	if run == "" { // fall back to the test func name in a generated file
+		re := prof.TestFuncRE()
 		for _, content := range files {
-			if m := testFuncRE.FindStringSubmatch(content); m != nil {
+			if m := re.FindStringSubmatch(content); m != nil {
 				run = m[1]
 				break
 			}
@@ -100,7 +101,7 @@ func (s *Service) GenerateTest(ctx context.Context, sessionID, file, rationale, 
 // non-empty) is a repair turn.
 func (s *Service) GenerateBuildArtifact(ctx context.Context, sessionID, kind, errOut string, onStep StepFunc) (map[string]string, error) {
 	s.artifacts.Clear()
-	if _, err := runRunner(ctx, s.builder, sessionID, buildArtifactPrompt(kind, errOut), onStep); err != nil {
+	if _, err := runRunner(ctx, s.builder, sessionID, buildArtifactPrompt(s.language(), kind, errOut), onStep); err != nil {
 		return nil, err
 	}
 	files := s.artifacts.Files()
@@ -110,7 +111,7 @@ func (s *Service) GenerateBuildArtifact(ctx context.Context, sessionID, kind, er
 	return files, nil
 }
 
-func buildArtifactPrompt(kind, errOut string) string {
+func buildArtifactPrompt(prof lang.Profile, kind, errOut string) string {
 	var b strings.Builder
 	if errOut != "" {
 		b.WriteString("Your previous artifact failed. Treat the output below as authoritative, fix it, and call " +
@@ -119,20 +120,14 @@ func buildArtifactPrompt(kind, errOut string) string {
 		b.WriteString("\n\n")
 	}
 	if kind == "dockerfile" {
-		b.WriteString("Generate a multi-stage Dockerfile for this Go service that ALSO builds its React/TS storefront " +
-			"under web/ (npm ci && npm run build → web/dist), bakes web/dist into the final image, builds the Go binary, " +
-			"and runs it listening on :9090. read_source go.mod, main.go, and web/package.json first. Call " +
-			"write_artifact(file=\"Dockerfile\", content=…). Then reply: done.")
+		b.WriteString(prof.DockerfileGuidance())
 	} else { // build-script
-		b.WriteString("Generate a build script for this Go service that first builds the React/TS storefront under web/ " +
-			"(npm install && npm run build) and then the Go binary with `go build -o demo_app_run<ext> .` in the module " +
-			"root. read_source web/package.json and go.mod first. Provide BOTH build.ps1 (PowerShell) and build.sh (bash) " +
-			"via two write_artifact calls. Then reply: done.")
+		b.WriteString(prof.BuildScriptGuidance())
 	}
 	return b.String()
 }
 
-func testGenPrompt(file, rationale, repairErr string) string {
+func testGenPrompt(prof lang.Profile, file, rationale, repairErr string) string {
 	var b strings.Builder
 	if repairErr != "" {
 		b.WriteString("Your previous test did not compile/run cleanly. Treat the output below as authoritative, fix the " +
@@ -141,24 +136,24 @@ func testGenPrompt(file, rationale, repairErr string) string {
 		b.WriteString("\n\n")
 	}
 	fmt.Fprintf(&b, "A fix was just applied to %q.\nRationale: %s\n\n", file, rationale)
-	b.WriteString("Ensure a Go regression test guards this fix; it will be run as the deploy gate.")
+	fmt.Fprintf(&b, "Ensure a %s regression test guards this fix; it will be run as the deploy gate. "+
+		"If no existing test already covers it, %s. End with RUN=<TestName>.", prof.BuilderRole(), prof.TestFileGuidance())
 	return b.String()
 }
 
-const builderPrompt = `You are a Go test engineer. A bug was just fixed in a file; ensure a regression test guards
-the FIXED behavior — one that FAILS on the buggy code and PASSES once fixed.
+const builderPrompt = `You are a test engineer. A bug was just fixed in a file; ensure a regression test guards
+the FIXED behavior — one that FAILS on the buggy code and PASSES once fixed, written in the project's
+existing test framework and language.
 
 Tools: read_source (read any file, project-relative) and write_artifact (record a full file).
 
 Steps:
 1. read_source the fixed file to see the responsible function(s).
-2. read_source the package's existing *_test.go files to check whether a test already covers this behavior.
+2. read_source the module/package's existing test files to check whether a test already covers this behavior.
 3a. If an existing test already asserts the FIXED behavior of the responsible function, REUSE it: write
-    nothing and reply with exactly: RUN=<ExistingTestFuncName>
-3b. Otherwise WRITE a new test: call write_artifact(file="<name>_test.go", content=<full Go file>) in the
-    same package (package main), using net/http/httptest to invoke the handler/function directly and assert
-    the fixed behavior (e.g. an out-of-range request returns 400 not 500; a slow op now responds under a
-    threshold). Keep it deterministic and fast, and mirror the style of the existing *_test.go files.
-    Then reply with exactly: RUN=<NewTestFuncName>
+    nothing and reply with exactly: RUN=<ExistingTestName>
+3b. Otherwise WRITE a new test as described in the task (the file name, framework and assertion style are
+    specified there). Keep it deterministic and fast and mirror the style of the existing tests. Then reply
+    with exactly: RUN=<NewTestName>
 
-Finish with a single final line: RUN=<TestFunctionName>  — and nothing after it.`
+Finish with a single final line: RUN=<TestName>  — and nothing after it.`

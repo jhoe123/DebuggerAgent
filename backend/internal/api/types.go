@@ -263,7 +263,7 @@ type PipelineSettings struct {
 type GitSourceConfig struct {
 	RepoURL            string `json:"repoUrl"`
 	AuthToken          string `json:"authToken,omitempty"` // secret (HTTPS PAT); empty = keep existing
-	WorkingBranch      string `json:"workingBranch"`       // integration branch fixes merge into (default "main")
+	WorkingBranch      string `json:"workingBranch"`       // integration branch fixes merge into (default "patchpilot")
 	BranchPrefix       string `json:"branchPrefix"`        // prefix for per-fix branches (default "patchpilot/fix-")
 	BranchPerFix       bool   `json:"branchPerFix"`        // create an isolated branch per fix
 	AutoMergeOnConfirm bool   `json:"autoMergeOnConfirm"`  // on confirm, merge the fix branch then delete it

@@ -1,12 +1,26 @@
 package pipeline
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"cloud.google.com/go/cloudbuild/apiv1/v2/cloudbuildpb"
+
 	"github.com/patchpilot/backend/internal/democtl"
+	"github.com/patchpilot/backend/internal/lang"
 )
+
+// testStep returns the build's "test" step, or nil.
+func testStep(b *cloudbuildpb.Build) *cloudbuildpb.BuildStep {
+	for _, s := range b.Steps {
+		if s.Id == "test" {
+			return s
+		}
+	}
+	return nil
+}
 
 // TestSetSourceRootRepoints guards the Git-source integration: after a clone connects,
 // the cloud runner must package source from the clone (re-pointed, absolute) rather than
@@ -110,33 +124,37 @@ func TestBuildSpecNoBaseSaveWithoutDeploy(t *testing.T) {
 	}
 }
 
-// TestTidyGoSourceDropsUnusedImport guards the Cloud Build "imported and not used"
-// regression: the perf-fix patch removed the only time.Sleep but left "time" imported,
-// which failed the in-build `go test`. tidyGoSource must drop the orphaned import.
-func TestTidyGoSourceDropsUnusedImport(t *testing.T) {
-	src := []byte(`package main
-
-import (
-	"fmt"
-	"time"
-)
-
-func buildReport(n int) int {
-	total := 0
-	for i := 0; i < n; i++ {
-		total += i
+// TestBuildSpecGoTestStep guards the default Go path: the in-build test step uses the
+// golang image and `go test -run`.
+func TestBuildSpecGoTestStep(t *testing.T) {
+	r := &CloudRunner{cfg: Config{}} // zero-value lang => Go
+	eff := Config{Project: "p", Region: "us-central1", Service: "checkout-demo", ARRepo: "patchpilot"}
+	b := r.buildSpec(eff, "obj.tar.gz", "img:1", "TestReport", democtl.Options{Test: true}, false)
+	step := testStep(b)
+	if step == nil || step.Name != "golang:1.25" || step.Entrypoint != "go" {
+		t.Fatalf("go test step = %+v; want golang:1.25/go", step)
 	}
-	return total
+	if strings.Join(step.Args, " ") != "test -run TestReport ./..." {
+		t.Fatalf("go test args = %v", step.Args)
+	}
 }
 
-func main() { fmt.Println(buildReport(3)) }
-`)
-	out := string(tidyGoSource("main.go", src))
-	if strings.Contains(out, `"time"`) {
-		t.Errorf("unused \"time\" import should have been removed:\n%s", out)
+// TestBuildSpecPythonTestStep guards the Python path: when the source root carries a
+// Python manifest, the in-build test step runs on the python image via pytest.
+func TestBuildSpecPythonTestStep(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("flask"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(out, `"fmt"`) {
-		t.Errorf("used \"fmt\" import must be kept:\n%s", out)
+	r := &CloudRunner{cfg: Config{SourceRoot: dir}, lang: lang.Detect(dir)}
+	eff := Config{Project: "p", Region: "us-central1", Service: "checkout-demo", ARRepo: "patchpilot"}
+	b := r.buildSpec(eff, "obj.tar.gz", "img:1", "test_checkout", democtl.Options{Test: true}, false)
+	step := testStep(b)
+	if step == nil || step.Name != "python:3.12" || step.Entrypoint != "bash" {
+		t.Fatalf("python test step = %+v; want python:3.12/bash", step)
+	}
+	if joined := strings.Join(step.Args, " "); !strings.Contains(joined, "pytest -k test_checkout") {
+		t.Fatalf("python test args missing pytest selector: %v", step.Args)
 	}
 }
 
@@ -154,23 +172,11 @@ Step #0 - "test": ./main.go:29:2: "time" imported and not used
 Step #0 - "test": FAIL	github.com/patchpilot/demo_app [build failed]
 Finished Step #0 - "test"
 ERROR: build step 0 "golang:1.25" failed: step exited with non-zero status: 1`
-	out := extractBuildErrors(log)
+	out := extractBuildErrors(log, lang.Profile{}.ErrorMarkers())
 	if !strings.Contains(out, `"time" imported and not used`) {
 		t.Errorf("expected the compile error in output:\n%s", out)
 	}
 	if strings.Contains(out, "go: downloading") || strings.Contains(out, "Fetching storage object") {
 		t.Errorf("expected download/fetch noise to be filtered out:\n%s", out)
-	}
-}
-
-// TestTidyGoSourceIgnoresNonGo leaves non-Go files (and unparseable Go) untouched.
-func TestTidyGoSourceIgnoresNonGo(t *testing.T) {
-	raw := []byte("FROM golang:1.25\n# not go source\n")
-	if got := tidyGoSource("Dockerfile", raw); string(got) != string(raw) {
-		t.Errorf("non-Go file must pass through unchanged, got: %s", got)
-	}
-	bad := []byte("package main\nfunc (")
-	if got := tidyGoSource("broken.go", bad); string(got) != string(bad) {
-		t.Errorf("unparseable Go must pass through unchanged, got: %s", got)
 	}
 }

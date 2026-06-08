@@ -471,7 +471,7 @@ export function SettingsPage() {
                     <input
                       value={gitForm.workingBranch}
                       disabled={gitBusy}
-                      placeholder="main"
+                      placeholder="patchpilot"
                       onChange={(e) => setGitForm({ ...gitForm, workingBranch: e.target.value })}
                     />
                   </label>

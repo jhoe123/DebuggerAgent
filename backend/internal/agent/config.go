@@ -57,7 +57,7 @@ type Config struct {
 	EnableGitSource        bool   // ENABLE_GIT_SOURCE — gates clone/branch/merge/push (default on)
 	GitSourceRepoURL       string // GIT_SOURCE_REPO_URL (https clone URL; no creds)
 	GitSourceAuthToken     string // GIT_SOURCE_TOKEN (secret HTTPS PAT; never committed)
-	GitSourceWorkingBranch string // GIT_SOURCE_WORKING_BRANCH (default "main")
+	GitSourceWorkingBranch string // GIT_SOURCE_WORKING_BRANCH (default "patchpilot")
 	GitSourceBranchPrefix  string // GIT_SOURCE_BRANCH_PREFIX (default "patchpilot/fix-")
 	GitSourceBranchPerFix  bool   // GIT_SOURCE_BRANCH_PER_FIX (default on)
 	GitSourceAutoMerge     bool   // GIT_SOURCE_AUTO_MERGE (default on)
@@ -109,7 +109,7 @@ func LoadConfig() Config {
 		EnableGitSource:        os.Getenv("ENABLE_GIT_SOURCE") != "false", // default on; opt out with "false"
 		GitSourceRepoURL:       env("GIT_SOURCE_REPO_URL", "https://github.com/jhoe123/patchpilot-demo-app.git"),
 		GitSourceAuthToken:     os.Getenv("GIT_SOURCE_TOKEN"),
-		GitSourceWorkingBranch: env("GIT_SOURCE_WORKING_BRANCH", "main"),
+		GitSourceWorkingBranch: env("GIT_SOURCE_WORKING_BRANCH", "patchpilot"),
 		GitSourceBranchPrefix:  env("GIT_SOURCE_BRANCH_PREFIX", "patchpilot/fix-"),
 		GitSourceBranchPerFix:  os.Getenv("GIT_SOURCE_BRANCH_PER_FIX") != "false", // default on; opt out with "false"
 		GitSourceAutoMerge:     os.Getenv("GIT_SOURCE_AUTO_MERGE") != "false", // default on
