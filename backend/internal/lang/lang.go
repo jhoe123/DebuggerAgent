@@ -72,18 +72,17 @@ func (p Profile) CloudTestStep(runName string) (image, entrypoint string, args [
 }
 
 // BuildCommands returns the local build-gate commands, run in order in dir. For Go this
-// is a single `go build`. For Python it creates/refreshes a venv, installs requirements
-// (when present) plus pytest, then byte-compiles the sources as the error gate.
+// is a single `go build`. For Python it creates/refreshes a venv, installs the project's
+// requirements (when present), then byte-compiles the sources as the error gate. (pytest
+// itself is expected from the project's deps; the cloud test step self-installs it.)
 func (p Profile) BuildCommands(dir, binPath string) []Command {
 	if p.isPython() {
 		venv := filepath.Join(dir, ".venv")
 		cmds := []Command{{Name: pythonExe(), Args: []string{"-m", "venv", venv}}}
-		pip := venvTool(dir, "pip")
 		if fileExists(filepath.Join(dir, "requirements.txt")) {
-			cmds = append(cmds, Command{Name: pip, Args: []string{"install", "-r", "requirements.txt"}})
+			cmds = append(cmds, Command{Name: venvTool(dir, "pip"), Args: []string{"install", "-r", "requirements.txt"}})
 		}
-		cmds = append(cmds, Command{Name: pip, Args: []string{"install", "pytest"}})
-		cmds = append(cmds, Command{Name: venvTool(dir, "python"), Args: []string{"-m", "compileall", "."}})
+		cmds = append(cmds, Command{Name: venvTool(dir, "python"), Args: compileAllArgs})
 		return cmds
 	}
 	return []Command{{Name: "go", Args: []string{"build", "-o", binPath, "."}}}
@@ -97,11 +96,15 @@ func (p Profile) TestCommands(dir, runFilter string) []Command {
 	return []Command{{Name: "go", Args: []string{"test", "-run", runFilter, "./..."}}}
 }
 
+// compileAllArgs byte-compiles the project as the Python error gate, quietly and skipping
+// the virtualenv (so installed packages aren't compiled). "." resolves to the run dir.
+var compileAllArgs = []string{"-m", "compileall", "-q", "-x", `\.venv`, "."}
+
 // VetCommands returns the static-check / compile gate used when no scoped test applies
 // (Go: `go vet ./...`; Python: byte-compile every module).
 func (p Profile) VetCommands(dir string) []Command {
 	if p.isPython() {
-		return []Command{{Name: p.pythonInterp(dir), Args: []string{"-m", "compileall", "."}}}
+		return []Command{{Name: p.pythonInterp(dir), Args: compileAllArgs}}
 	}
 	return []Command{{Name: "go", Args: []string{"vet", "./..."}}}
 }

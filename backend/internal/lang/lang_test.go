@@ -74,26 +74,29 @@ func TestBuildCommands(t *testing.T) {
 		t.Fatalf("go build commands = %+v", goCmds)
 	}
 
-	// Python build in a dir with requirements.txt: venv -> pip install -r -> pip install pytest -> compileall.
+	// Python build in a dir with requirements.txt: venv -> pip install -r -> compileall.
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("flask"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	pyCmds := Profile{id: Python}.BuildCommands(dir, "")
-	if len(pyCmds) != 4 {
-		t.Fatalf("python build with requirements should be 4 steps, got %d: %+v", len(pyCmds), pyCmds)
+	if len(pyCmds) != 3 {
+		t.Fatalf("python build with requirements should be 3 steps, got %d: %+v", len(pyCmds), pyCmds)
 	}
 	if !strings.Contains(strings.Join(pyCmds[0].Args, " "), "venv") {
 		t.Fatalf("first python build step should create a venv: %+v", pyCmds[0])
+	}
+	if got := strings.Join(pyCmds[1].Args, " "); !strings.Contains(got, "install -r requirements.txt") {
+		t.Fatalf("second python build step should install requirements: %q", got)
 	}
 	if got := strings.Join(pyCmds[len(pyCmds)-1].Args, " "); !strings.Contains(got, "compileall") {
 		t.Fatalf("last python build step should compileall: %q", got)
 	}
 
-	// Without requirements.txt the pip-install-r step is dropped (3 steps).
+	// Without requirements.txt the pip-install-r step is dropped (venv -> compileall).
 	pyCmds = Profile{id: Python}.BuildCommands(t.TempDir(), "")
-	if len(pyCmds) != 3 {
-		t.Fatalf("python build without requirements should be 3 steps, got %d: %+v", len(pyCmds), pyCmds)
+	if len(pyCmds) != 2 {
+		t.Fatalf("python build without requirements should be 2 steps, got %d: %+v", len(pyCmds), pyCmds)
 	}
 }
 
