@@ -3,19 +3,52 @@ import { useSettings, type ThemeMode } from "../context/SettingsContext";
 import { useAppData } from "../context/AppDataContext";
 import { useAutopilot } from "../context/AutopilotContext";
 import { useToast } from "../context/ToastContext";
-import { getPipelineConfig, getSlack, setPipelineConfig, setSlackConfig, testSlack } from "../api";
-import type { BuildStrategy, DeployTarget, PipelineSettings, SlackStatus, TestStrategy } from "../types";
+import {
+  connectGitSource,
+  getGitSource,
+  getPipelineConfig,
+  getSlack,
+  setGitSourceConfig,
+  setPipelineConfig,
+  setSlackConfig,
+  testSlack,
+} from "../api";
+import type {
+  BuildStrategy,
+  DeployTarget,
+  GitSourceConfig,
+  GitSourceStatus,
+  PipelineSettings,
+  SlackStatus,
+  TestStrategy,
+} from "../types";
 
 const THEMES: ThemeMode[] = ["light", "dark", "system"];
 const STAGES = ["apply", "test", "build", "deploy"] as const;
 
-type TabKey = "general" | "automation" | "pipeline" | "notifications";
+type TabKey = "general" | "automation" | "pipeline" | "git" | "notifications";
 const TABS: { key: TabKey; label: string; icon: string }[] = [
   { key: "general", label: "General", icon: "⚙" },
   { key: "automation", label: "Automation", icon: "✦" },
   { key: "pipeline", label: "Pipeline & deploy", icon: "⇪" },
+  { key: "git", label: "Git source", icon: "⎇" },
   { key: "notifications", label: "Notifications", icon: "✉" },
 ];
+
+// Maps the GET status (non-secret) back into the editable config form. The token
+// is left blank — an empty token tells the backend to keep the existing secret.
+function statusToConfig(s: GitSourceStatus): GitSourceConfig {
+  return {
+    repoUrl: s.repoUrlPreview ?? "",
+    workingBranch: s.workingBranch,
+    branchPrefix: s.branchPrefix,
+    branchPerFix: s.branchPerFix,
+    autoMergeOnConfirm: s.autoMergeOnConfirm,
+    pushEnabled: s.pushEnabled,
+    commitAuthorName: s.commitAuthorName,
+    commitAuthorEmail: s.commitAuthorEmail,
+  };
+}
 
 // Human-friendly labels for the strategy / target selects (values match the backend).
 const TEST_STRATEGY_LABELS: Record<TestStrategy, string> = {
@@ -66,6 +99,10 @@ export function SettingsPage() {
   const [slackBusy, setSlackBusy] = useState(false);
   const [pipe, setPipe] = useState<PipelineSettings | null>(null);
   const [pipeBusy, setPipeBusy] = useState(false);
+  const [git, setGit] = useState<GitSourceStatus | null>(null);
+  const [gitForm, setGitForm] = useState<GitSourceConfig | null>(null);
+  const [gitTok, setGitTok] = useState("");
+  const [gitBusy, setGitBusy] = useState(false);
 
   useEffect(() => {
     getSlack()
@@ -74,6 +111,12 @@ export function SettingsPage() {
     getPipelineConfig()
       .then(setPipe)
       .catch(() => setPipe(null));
+    getGitSource()
+      .then((s) => {
+        setGit(s);
+        setGitForm(statusToConfig(s));
+      })
+      .catch(() => setGit(null));
   }, []);
 
   function saveUrl() {
@@ -120,6 +163,35 @@ export function SettingsPage() {
       toast.error("Slack test failed — check the webhook");
     } finally {
       setSlackBusy(false);
+    }
+  }
+
+  async function saveGit() {
+    if (!gitForm) return;
+    setGitBusy(true);
+    try {
+      const s = await setGitSourceConfig({ ...gitForm, authToken: gitTok.trim() || undefined });
+      setGit(s);
+      setGitForm(statusToConfig(s));
+      if (gitTok) setGitTok("");
+      toast.success("Git source settings saved");
+    } catch {
+      toast.error("Couldn't save Git source settings");
+    } finally {
+      setGitBusy(false);
+    }
+  }
+  async function connectGit() {
+    setGitBusy(true);
+    try {
+      const s = await connectGitSource();
+      setGit(s);
+      setGitForm(statusToConfig(s));
+      toast.success(s.connected ? `Connected to ${s.repoUrlPreview ?? "repository"}` : "Connect attempted — check status");
+    } catch (e) {
+      toast.error(`Connect failed: ${String(e)}`);
+    } finally {
+      setGitBusy(false);
     }
   }
 
@@ -365,6 +437,170 @@ export function SettingsPage() {
             <section className="settings-card">
               <h3>Pipeline &amp; deploy</h3>
               <p className="muted">Pipeline settings are unavailable — the backend isn't reachable.</p>
+            </section>
+          )}
+        </div>
+      )}
+
+      {tab === "git" && (
+        <div className="settings-panel">
+          {gitForm ? (
+            <>
+              <section className="settings-card">
+                <h3>
+                  Git source{" "}
+                  <span className="mini-chip">{git?.enabled ? "writes enabled" : "read-only"}</span>
+                </h3>
+                <p className="muted">
+                  Point PatchPilot at a Git repository it manages fixes in: it can branch per fix, push,
+                  and merge into the working branch on confirm. The auth token is a secret and is never
+                  returned by the API.
+                </p>
+                <div className="pipe-grid">
+                  <label className="pipe-field">
+                    <span>Repository URL</span>
+                    <input
+                      value={gitForm.repoUrl}
+                      disabled={gitBusy}
+                      placeholder="https://github.com/you/repo.git"
+                      onChange={(e) => setGitForm({ ...gitForm, repoUrl: e.target.value })}
+                    />
+                  </label>
+                  <label className="pipe-field">
+                    <span>Working branch</span>
+                    <input
+                      value={gitForm.workingBranch}
+                      disabled={gitBusy}
+                      placeholder="main"
+                      onChange={(e) => setGitForm({ ...gitForm, workingBranch: e.target.value })}
+                    />
+                  </label>
+                  <label className="pipe-field">
+                    <span>Fix branch prefix</span>
+                    <input
+                      value={gitForm.branchPrefix}
+                      disabled={gitBusy}
+                      placeholder="patchpilot/fix-"
+                      onChange={(e) => setGitForm({ ...gitForm, branchPrefix: e.target.value })}
+                    />
+                  </label>
+                  <label className="pipe-field">
+                    <span>Commit author name</span>
+                    <input
+                      value={gitForm.commitAuthorName}
+                      disabled={gitBusy}
+                      placeholder="PatchPilot"
+                      onChange={(e) => setGitForm({ ...gitForm, commitAuthorName: e.target.value })}
+                    />
+                  </label>
+                  <label className="pipe-field">
+                    <span>Commit author email</span>
+                    <input
+                      value={gitForm.commitAuthorEmail}
+                      disabled={gitBusy}
+                      placeholder="bot@example.com"
+                      onChange={(e) => setGitForm({ ...gitForm, commitAuthorEmail: e.target.value })}
+                    />
+                  </label>
+                </div>
+
+                <p className="muted autonomy-label">Auth token (HTTPS personal access token)</p>
+                <div className="qa-input">
+                  <input
+                    type="password"
+                    value={gitTok}
+                    placeholder={git?.tokenConfigured ? "Replace token…" : "ghp_… / glpat-…"}
+                    disabled={gitBusy}
+                    onChange={(e) => setGitTok(e.target.value)}
+                    aria-label="Git auth token"
+                  />
+                </div>
+
+                <label className="switch-row">
+                  <input
+                    type="checkbox"
+                    checked={gitForm.branchPerFix}
+                    disabled={gitBusy}
+                    onChange={() => setGitForm({ ...gitForm, branchPerFix: !gitForm.branchPerFix })}
+                  />
+                  <span>
+                    <strong>Create a branch per fix</strong> is {gitForm.branchPerFix ? "ON" : "off"}
+                  </span>
+                </label>
+                <label className="switch-row">
+                  <input
+                    type="checkbox"
+                    checked={gitForm.pushEnabled}
+                    disabled={gitBusy}
+                    onChange={() => setGitForm({ ...gitForm, pushEnabled: !gitForm.pushEnabled })}
+                  />
+                  <span>
+                    <strong>Push to remote</strong> is {gitForm.pushEnabled ? "ON" : "off"} — needs a token
+                    with write access
+                  </span>
+                </label>
+                <label className="switch-row">
+                  <input
+                    type="checkbox"
+                    checked={gitForm.autoMergeOnConfirm}
+                    disabled={gitBusy}
+                    onChange={() =>
+                      setGitForm({ ...gitForm, autoMergeOnConfirm: !gitForm.autoMergeOnConfirm })
+                    }
+                  />
+                  <span>
+                    <strong>Merge &amp; delete branch on confirm</strong> is{" "}
+                    {gitForm.autoMergeOnConfirm ? "ON" : "off"}
+                  </span>
+                </label>
+
+                <div className="pipe-actions">
+                  <button className="primary-btn" disabled={gitBusy} onClick={saveGit}>
+                    {gitBusy ? "Saving…" : "Save Git source settings"}
+                  </button>
+                  <button
+                    className="seg-btn"
+                    disabled={gitBusy || !gitForm.repoUrl.trim() || !git?.enabled}
+                    onClick={connectGit}
+                    title={git?.enabled ? "" : "Set ENABLE_GIT_SOURCE=true on the backend to clone/branch/merge"}
+                  >
+                    {gitBusy ? "Working…" : git?.connected ? "Re-clone / fetch" : "Connect / Clone"}
+                  </button>
+                </div>
+              </section>
+
+              <section className="settings-card">
+                <h3>Connection</h3>
+                <p className="muted">Live state of the configured Git source.</p>
+                <div className="tc-status">
+                  <span className={`chip ${git?.connected ? "chip-ok" : "chip-warn"}`}>
+                    {git?.connected ? "connected" : "not connected"}
+                  </span>
+                  {git?.repoUrlPreview && <span className="chip chip-info">{git.repoUrlPreview}</span>}
+                  {git?.currentBranch && <span className="chip chip-info">on {git.currentBranch}</span>}
+                  {git?.tokenConfigured && <span className="chip chip-ok">token set</span>}
+                  {git?.dirty && <span className="chip chip-warn">uncommitted changes</span>}
+                  {git?.lastError && <span className="chip chip-warn">{git.lastError}</span>}
+                </div>
+
+                {git && git.branches.length > 0 && (
+                  <>
+                    <p className="muted autonomy-label">Active fix branches</p>
+                    <div className="problem-chips">
+                      {git.branches.map((b) => (
+                        <span key={b.name} className="mini-chip" title={b.problemId ? `Problem ${b.problemId}` : b.name}>
+                          ⎇ {b.name}
+                        </span>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </section>
+            </>
+          ) : (
+            <section className="settings-card">
+              <h3>Git source</h3>
+              <p className="muted">Git source settings are unavailable — the backend isn't reachable.</p>
             </section>
           )}
         </div>

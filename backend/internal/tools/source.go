@@ -9,12 +9,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
-// Sandbox restricts all file access to a single root directory (the demo app
-// source). It prevents path-traversal escapes (e.g. "../../etc/passwd").
+// Sandbox restricts all file access to a single root directory (the source tree
+// being patched). It prevents path-traversal escapes (e.g. "../../etc/passwd").
+// The root can be re-pointed at runtime via SetRoot (e.g. when a Git source is
+// connected); a RWMutex keeps concurrent reads consistent with that swap.
 type Sandbox struct {
-	Root string // cleaned absolute path
+	mu   sync.RWMutex
+	root string // cleaned absolute path
 }
 
 // NewSandbox creates a sandbox rooted at the given directory.
@@ -23,14 +27,36 @@ func NewSandbox(root string) (*Sandbox, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve source root: %w", err)
 	}
-	return &Sandbox{Root: filepath.Clean(abs)}, nil
+	return &Sandbox{root: filepath.Clean(abs)}, nil
+}
+
+// Root returns the current sandbox root (absolute, cleaned).
+func (s *Sandbox) Root() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.root
+}
+
+// SetRoot re-points the sandbox at a new root directory (resolved + cleaned), so
+// read_source / propose_patch operate on a newly-connected Git source clone. Every
+// agent and the patch store share one Sandbox, so a single SetRoot re-points them all.
+func (s *Sandbox) SetRoot(root string) error {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolve source root: %w", err)
+	}
+	s.mu.Lock()
+	s.root = filepath.Clean(abs)
+	s.mu.Unlock()
+	return nil
 }
 
 // Resolve validates that rel stays within the sandbox root and returns the
 // absolute on-disk path. It rejects any path that escapes the root.
 func (s *Sandbox) Resolve(rel string) (string, error) {
-	abs := filepath.Clean(filepath.Join(s.Root, rel))
-	r, err := filepath.Rel(s.Root, abs)
+	root := s.Root()
+	abs := filepath.Clean(filepath.Join(root, rel))
+	r, err := filepath.Rel(root, abs)
 	if err != nil {
 		return "", fmt.Errorf("invalid path %q: %w", rel, err)
 	}

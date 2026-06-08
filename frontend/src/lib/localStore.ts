@@ -18,7 +18,7 @@ export interface DismissedEntry {
 }
 export type DismissedMap = Record<string, DismissedEntry>;
 
-export type RunType = "investigation" | "pipeline";
+export type RunType = "investigation" | "pipeline" | "confirm";
 
 export interface LocalRun {
   id: string; // `${Date.now()}-${problemId}`
@@ -37,6 +37,7 @@ export interface ProblemStatus {
   investigated: boolean;
   patched: boolean; // a pipeline run succeeded
   failed: boolean; // a pipeline run failed
+  confirmed: boolean; // a fix was confirmed (merged to the working branch)
 }
 
 function loadJSON<T>(key: string, fallback: T): T {
@@ -103,12 +104,13 @@ export function latestRun(runs: LocalRun[], problemId: string, type: RunType): L
 export function problemStatusMap(runs: LocalRun[]): Record<string, ProblemStatus> {
   const map: Record<string, ProblemStatus> = {};
   for (const r of runs) {
-    const s = (map[r.problemId] ??= { investigated: false, patched: false, failed: false });
+    const s = (map[r.problemId] ??= { investigated: false, patched: false, failed: false, confirmed: false });
     if (r.type === "investigation") s.investigated = true;
     if (r.type === "pipeline") {
       if (r.status === "ok") s.patched = true;
       else s.failed = true;
     }
+    if (r.type === "confirm" && r.status === "ok") s.confirmed = true;
   }
   return map;
 }

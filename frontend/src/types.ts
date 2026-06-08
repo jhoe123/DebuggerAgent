@@ -126,7 +126,13 @@ export interface PatchesResponse {
 }
 
 export type ArtifactStageKey = "investigation" | "patch" | "test" | "build" | "deploy" | "verify";
-export type ArtifactOverall = "investigated" | "staged" | "running" | "deployed" | "failed";
+export type ArtifactOverall =
+  | "investigated"
+  | "staged"
+  | "running"
+  | "deployed"
+  | "failed"
+  | "confirmed";
 
 export interface ArtifactStage {
   status: "ok" | "failed" | "pending" | "running";
@@ -143,6 +149,11 @@ export interface ProblemArtifact {
   stages: Partial<Record<ArtifactStageKey, ArtifactStage>>;
   verify?: string;
   updatedAt: string;
+  // Git source (set when a Git source is configured with branch-per-fix).
+  fixBranch?: string; // the per-problem branch this fix lives on
+  pushed?: boolean; // the fix branch was pushed to the remote
+  confirmed?: boolean; // a human confirmed the fix (merged to the working branch)
+  mergedAt?: string;
 }
 
 export interface ArtifactsResponse {
@@ -248,4 +259,57 @@ export interface PipelineSettings {
   deployTarget: DeployTarget;
   deployParams: Record<string, string>; // image/tag/hostPort · project/region/service/sourceBucket/artifactRepo · scriptPath
   healthUrl: string; // reachability check URL (full URL or path; defaults to the demo app URL)
+}
+
+// --- Git source (branch-per-fix + confirm-to-merge; backend is source of truth) ---
+
+export interface GitFixBranch {
+  name: string; // e.g. "patchpilot/fix-error-checkout"
+  problemId?: string; // problem this branch addresses, if known
+}
+
+// GitSourceConfig is the editable config POSTed to the backend. authToken is a secret;
+// omit/leave empty to keep the existing token unchanged.
+export interface GitSourceConfig {
+  repoUrl: string;
+  authToken?: string; // secret HTTPS PAT; omit to keep existing
+  workingBranch: string;
+  branchPrefix: string;
+  branchPerFix: boolean;
+  autoMergeOnConfirm: boolean;
+  pushEnabled: boolean;
+  commitAuthorName: string;
+  commitAuthorEmail: string;
+  cloneDir?: string;
+}
+
+// GitSourceStatus is the GET /api/git-source payload. It never returns the raw token
+// or a token-bearing URL — only display-safe fields.
+export interface GitSourceStatus {
+  enabled: boolean; // mutating ops permitted (ENABLE_GIT_SOURCE + git present)
+  configured: boolean; // a repo URL is set
+  connected: boolean; // a clone exists on disk
+  dirty: boolean; // working tree has uncommitted changes
+  tokenConfigured: boolean; // a PAT is stored
+  repoUrlPreview?: string;
+  workingBranch: string;
+  currentBranch?: string;
+  branchPrefix: string;
+  branchPerFix: boolean;
+  autoMergeOnConfirm: boolean;
+  pushEnabled: boolean;
+  commitAuthorName: string;
+  commitAuthorEmail: string;
+  branches: GitFixBranch[];
+  lastError?: string;
+}
+
+// ConfirmFixResult is returned by POST /api/confirm-fix (the human merge gate).
+export interface ConfirmFixResult {
+  problemId: string;
+  merged: boolean;
+  mergedBranch?: string;
+  intoBranch?: string;
+  pushed?: boolean;
+  detail?: string;
 }

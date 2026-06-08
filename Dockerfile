@@ -22,9 +22,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/server ./cmd/server
 FROM node:24-slim
 WORKDIR /app
 # ca-certificates: the static Go binary needs system root CAs to call Vertex AI over TLS.
+# git: enables the optional Git source feature (clone/branch/commit/merge) on the host.
 # Then pre-install the Dynatrace MCP server so the first request doesn't pay an npx download.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @dynatrace-oss/dynatrace-mcp-server@latest
 COPY --from=backend /out/server /app/server

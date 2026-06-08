@@ -25,7 +25,7 @@ func NewInstrumentStore(sandbox *Sandbox) *InstrumentStore {
 }
 
 // Root returns the sandbox root the scan covers.
-func (s *InstrumentStore) Root() string { return s.sandbox.Root }
+func (s *InstrumentStore) Root() string { return s.sandbox.Root() }
 
 // SetScan validates and records the candidate set, assigning a stable ID to each
 // candidate (so the client only ever round-trips IDs, never full file bodies).
@@ -42,7 +42,7 @@ func (s *InstrumentStore) SetScan(scan api.InstrumentationScan) error {
 			c.ID = fmt.Sprintf("%s::%s::%s::%d::%d", c.File, c.Symbol, c.Kind, c.StartLine, i)
 		}
 	}
-	scan.Root = s.sandbox.Root
+	scan.Root = s.sandbox.Root()
 	if scan.Candidates == nil {
 		scan.Candidates = []api.InstrumentationCandidate{}
 	}
