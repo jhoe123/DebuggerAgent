@@ -8,6 +8,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -266,30 +267,152 @@ func runRunner(ctx context.Context, r *runner.Runner, sessionID, userMsg string,
 				final.WriteString(p.Text)
 			}
 			if p.FunctionCall != nil && onStep != nil {
-				onStep("tool", "running", toolMessage(p.FunctionCall.Name))
+				onStep("tool", "running", toolCallMessage(p.FunctionCall.Name, p.FunctionCall.Args))
+			}
+			if p.FunctionResponse != nil && onStep != nil {
+				if m := toolResultMessage(p.FunctionResponse.Name, p.FunctionResponse.Response); m != "" {
+					onStep("tool", "ok", m)
+				}
 			}
 		}
 	}
 	return final.String(), nil
 }
 
-func toolMessage(name string) string {
+// toolCallMessage builds a human-readable "running" step from a tool call's name and
+// arguments, naming the concrete target (file + line window, search query, DQL, …) so the
+// live timeline shows WHAT the agent is doing — not just which tool it called. Paths and
+// queries are wrapped in backticks so the frontend can render them monospace.
+func toolCallMessage(name string, args map[string]any) string {
 	switch name {
 	case "execute_dql":
+		if q := firstLine(argStr(args, "dql", "query", "statement"), 70); q != "" {
+			return "Querying Dynatrace · `" + q + "`…"
+		}
 		return "Querying Dynatrace spans…"
 	case "read_source":
-		return "Reading the source file…"
+		path := argStr(args, "path")
+		if path == "" {
+			return "Reading a source file…"
+		}
+		if q := argStr(args, "query"); q != "" {
+			return "Searching `" + path + "` for \"" + q + "\"…"
+		}
+		offset, limit := argInt(args, "offset"), argInt(args, "limit")
+		if offset > 0 && limit > 0 {
+			return fmt.Sprintf("Reading `%s` (lines %d–%d)…", path, offset, offset+limit-1)
+		}
+		return "Reading `" + path + "`…"
 	case "propose_patch":
+		if f := argStr(args, "file"); f != "" {
+			return "Proposing a fix to `" + f + "`…"
+		}
 		return "Proposing a fix…"
 	case "propose_instrumentation":
+		if n := argLen(args, "candidates"); n > 0 {
+			return fmt.Sprintf("Proposing instrumentation (%d %s)…", n, plural(n, "candidate", "candidates"))
+		}
 		return "Proposing instrumentation points…"
 	case "write_instrumented_file":
+		if f := argStr(args, "file"); f != "" {
+			return "Writing instrumented `" + f + "`…"
+		}
 		return "Writing instrumented source…"
 	case "write_artifact":
+		if f := argStr(args, "file"); f != "" {
+			return "Generating `" + f + "`…"
+		}
 		return "Generating test/build artifact…"
 	default:
 		return "Calling " + name + "…"
 	}
+}
+
+// toolResultMessage turns a tool's result into an optional "ok" step. Only read_source
+// yields one — reporting the RESOLVED line window (the reliable source of "which lines",
+// even for whole-file reads). Returns "" to emit nothing, so other tools (or a runner that
+// doesn't surface function responses) add no noise.
+func toolResultMessage(name string, resp map[string]any) string {
+	if name != "read_source" || resp == nil {
+		return ""
+	}
+	total := argInt(resp, "total_lines")
+	if total <= 0 {
+		return ""
+	}
+	path := argStr(resp, "path")
+	if path == "" {
+		path = "source"
+	}
+	msg := "Read `" + path + "`"
+	if start, end := argInt(resp, "start_line"), argInt(resp, "end_line"); start > 0 && end > 0 {
+		msg += fmt.Sprintf(" lines %d–%d of %d", start, end, total)
+	} else {
+		msg += fmt.Sprintf(" (%d lines)", total)
+	}
+	if b, ok := resp["truncated"].(bool); ok && b {
+		msg += ", truncated"
+	}
+	return msg
+}
+
+// argStr returns the first present, non-empty (trimmed) string among the given keys.
+func argStr(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if s, ok := m[k].(string); ok {
+			if t := strings.TrimSpace(s); t != "" {
+				return t
+			}
+		}
+	}
+	return ""
+}
+
+// argInt reads an integer-ish argument (JSON numbers arrive as float64).
+func argInt(m map[string]any, key string) int {
+	switch v := m[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			return int(n)
+		}
+	}
+	return 0
+}
+
+// argLen returns the length of an array-valued argument (e.g. instrumentation candidates).
+func argLen(m map[string]any, key string) int {
+	if a, ok := m[key].([]any); ok {
+		return len(a)
+	}
+	return 0
+}
+
+// firstLine returns the first line of s, trimmed and capped to max runes (with an ellipsis).
+func firstLine(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	if r := []rune(s); len(r) > max {
+		return strings.TrimSpace(string(r[:max])) + "…"
+	}
+	return s
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 const systemPrompt = `You are PatchPilot, an SRE/debugging assistant that investigates

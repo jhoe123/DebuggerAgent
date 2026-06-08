@@ -266,6 +266,7 @@ code { background: var(--panel-2); padding: 0.1rem 0.35rem; border-radius: 4px; 
 .step-fail { color: var(--del); }
 .step-fail .step-icon { color: var(--del); }
 .step-running .step-icon { color: var(--accent); }
+.step-ref { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; color: var(--accent); background: var(--panel-2); padding: 0 0.25rem; border-radius: 4px; white-space: nowrap; }
 .step-detail { width: 100%; background: #0b0f14; border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem; font-size: 0.75rem; overflow-x: auto; white-space: pre-wrap; }
 
 /* Test Console */
