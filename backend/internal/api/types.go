@@ -99,6 +99,46 @@ type PipelineResult struct {
 	Verify  string   `json:"verify,omitempty"` // before→after, e.g. "500 -> 400"
 }
 
+// StagedPatch is one patch in the consolidation batch (GET /api/patches). The
+// bulky patched_content is intentionally omitted — only display fields are sent.
+type StagedPatch struct {
+	ProblemID   string `json:"problemId"`
+	File        string `json:"file"`
+	UnifiedDiff string `json:"unifiedDiff,omitempty"`
+	Rationale   string `json:"rationale,omitempty"`
+	StagedAt    string `json:"stagedAt"` // RFC3339
+}
+
+// PatchesResponse is the GET /api/patches payload (the current batch).
+type PatchesResponse struct {
+	Patches []StagedPatch `json:"patches"`
+}
+
+// ArtifactStage is one lifecycle step's status on a ProblemArtifact.
+type ArtifactStage struct {
+	Status string `json:"status"`           // ok | failed | pending | running
+	At     string `json:"at,omitempty"`     // RFC3339
+	Detail string `json:"detail,omitempty"` // short note (root-cause summary, error, etc.)
+}
+
+// ProblemArtifact is the durable per-problem lifecycle record persisted server-side
+// (PATCH_OUTPUT_DIR/artifacts/<id>.json) and surfaced via GET /api/artifacts. Stages
+// keys: investigation | patch | test | build | deploy | verify.
+type ProblemArtifact struct {
+	ProblemID string                   `json:"problemId"`
+	Title     string                   `json:"title,omitempty"`
+	Kind      string                   `json:"kind,omitempty"`
+	Overall   string                   `json:"overall"` // investigated|staged|running|deployed|failed
+	Stages    map[string]ArtifactStage `json:"stages"`
+	Verify    string                   `json:"verify,omitempty"`
+	UpdatedAt string                   `json:"updatedAt"` // RFC3339
+}
+
+// ArtifactsResponse is the GET /api/artifacts payload (newest-updated first).
+type ArtifactsResponse struct {
+	Artifacts []ProblemArtifact `json:"artifacts"`
+}
+
 // HistoryEntry is one audited change: a proposed patch, an approval, or a
 // pipeline run. Surfaced read-only via GET /api/history (hosted-safe).
 type HistoryEntry struct {

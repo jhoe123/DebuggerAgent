@@ -134,8 +134,41 @@ body {
 .problem-restore:hover { border-color: var(--accent); }
 
 .mini-chip.status-investigated { color: var(--accent); border-color: var(--accent); }
+.mini-chip.status-staged { color: #e3b341; border-color: #6b4f1d; }
+.mini-chip.status-running { color: var(--accent); border-color: var(--accent); }
 .mini-chip.status-patched { color: var(--add); border-color: var(--add); }
 .mini-chip.status-failed { color: var(--del); border-color: var(--del); }
+
+/* Stage tracker: durable per-problem lifecycle status (server artifact). */
+.stage-tracker { border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; margin-bottom: 1rem; background: var(--panel-2); }
+.stage-tracker-head { display: flex; align-items: baseline; gap: 0.6rem; margin-bottom: 0.5rem; }
+.stage-overall { font-weight: 700; font-size: 0.9rem; }
+.stage-tracker.overall-deployed .stage-overall { color: var(--add); }
+.stage-tracker.overall-failed .stage-overall { color: var(--del); }
+.stage-tracker.overall-staged .stage-overall { color: #e3b341; }
+.stage-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.stage-chip { font-size: 0.72rem; border: 1px solid var(--border); border-radius: 999px; padding: 0.15rem 0.55rem; color: var(--muted); white-space: nowrap; }
+.stage-chip .stage-ico { font-weight: 700; }
+.stage-chip.stage-ok { color: var(--add); border-color: var(--add); }
+.stage-chip.stage-failed { color: var(--del); border-color: var(--del); }
+.stage-chip.stage-running { color: var(--accent); border-color: var(--accent); }
+.stage-chip.stage-pending { opacity: 0.6; }
+
+/* Batch panel: consolidated patches + run-pipeline (docked in the Problems page). */
+.batch-panel { margin-top: 1.25rem; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); padding: 1rem 1.25rem; }
+.batch-head h3 { margin: 0 0 0.2rem; }
+.batch-head .muted { margin: 0 0 0.6rem; font-size: 0.85rem; }
+.batch-list { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.8rem; }
+.batch-row { border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.7rem; background: var(--panel-2); }
+.batch-row-top { display: flex; align-items: center; gap: 0.5rem; }
+.batch-row-prob { color: var(--muted); font-size: 0.8rem; }
+.batch-remove { margin-left: auto; opacity: 1; }
+.batch-row-rationale { font-size: 0.8rem; margin-top: 0.3rem; }
+.batch-conflict { font-size: 0.82rem; color: #e3b341; margin: 0 0 0.7rem; }
+.batch-conflict code { margin: 0 0.15rem; }
+.pipeline-strategy { gap: 0.7rem; }
+.strategy-select { display: flex; flex-direction: column; gap: 0.2rem; color: var(--muted); font-size: 0.78rem; }
+.strategy-select select { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.3rem 0.4rem; font-size: 0.8rem; }
 
 .badge {
   font-size: 0.7rem;

@@ -109,6 +109,46 @@ export interface HistoryResponse {
   entries: HistoryEntry[];
 }
 
+// --- Patch consolidation batch + durable per-problem status artifacts ---
+
+// One staged patch in the consolidation batch (GET /api/patches). patchedContent
+// is intentionally not sent — only display fields.
+export interface StagedPatch {
+  problemId: string;
+  file: string;
+  unifiedDiff?: string;
+  rationale?: string;
+  stagedAt: string; // RFC3339
+}
+
+export interface PatchesResponse {
+  patches: StagedPatch[];
+}
+
+export type ArtifactStageKey = "investigation" | "patch" | "test" | "build" | "deploy" | "verify";
+export type ArtifactOverall = "investigated" | "staged" | "running" | "deployed" | "failed";
+
+export interface ArtifactStage {
+  status: "ok" | "failed" | "pending" | "running";
+  at?: string;
+  detail?: string;
+}
+
+// Durable per-problem lifecycle record (GET /api/artifacts), persisted server-side.
+export interface ProblemArtifact {
+  problemId: string;
+  title?: string;
+  kind?: "error" | "performance";
+  overall: ArtifactOverall;
+  stages: Partial<Record<ArtifactStageKey, ArtifactStage>>;
+  verify?: string;
+  updatedAt: string;
+}
+
+export interface ArtifactsResponse {
+  artifacts: ProblemArtifact[];
+}
+
 export type TestStrategy = "auto" | "reuse" | "generate" | "skip";
 export type BuildStrategy = "auto" | "script" | "default";
 export type DeployTarget = "local" | "docker" | "script" | "cloud-run";

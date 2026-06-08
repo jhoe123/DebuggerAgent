@@ -3,6 +3,7 @@
 // the same calls "just work" with no UI changes.
 import type {
   ApproveResult,
+  ArtifactsResponse,
   AskResult,
   AutopilotConfig,
   AutopilotSnapshot,
@@ -10,11 +11,14 @@ import type {
   HistoryResponse,
   InstrumentationScan,
   Investigation,
+  PatchesResponse,
   PipelineOptions,
   PipelineResult,
   Problem,
+  ProblemArtifact,
   SlackConfig,
   SlackStatus,
+  StagedPatch,
   Step,
   TestStatus,
   TriggerResult,
@@ -97,6 +101,52 @@ export async function listHistory(): Promise<HistoryEntry[]> {
     usedMock = true;
     return [];
   }
+}
+
+// --- Patch consolidation batch + durable per-problem status artifacts ---
+
+// listPatches returns the current consolidation batch (empty on any error/mock).
+export async function listPatches(): Promise<StagedPatch[]> {
+  try {
+    return (await real<PatchesResponse>("/api/patches")).patches ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function stagePatch(problemId: string): Promise<StagedPatch[]> {
+  return (
+    await real<PatchesResponse>("/api/patches/stage", {
+      method: "POST",
+      body: JSON.stringify({ problemId }),
+    })
+  ).patches ?? [];
+}
+
+export async function unstagePatch(problemId: string): Promise<StagedPatch[]> {
+  return (
+    await real<PatchesResponse>("/api/patches/unstage", {
+      method: "POST",
+      body: JSON.stringify({ problemId }),
+    })
+  ).patches ?? [];
+}
+
+// listArtifacts returns durable per-problem lifecycle status (empty on error/mock).
+export async function listArtifacts(): Promise<ProblemArtifact[]> {
+  try {
+    return (await real<ArtifactsResponse>("/api/artifacts")).artifacts ?? [];
+  } catch {
+    return [];
+  }
+}
+
+// runPipeline applies the staged batch then streams test→build→deploy→verify once.
+export async function runPipeline(
+  options: PipelineOptions,
+  onStep: (s: Step) => void,
+): Promise<PipelineResult> {
+  return consumeSSE<PipelineResult>("/api/pipeline/run", { options }, onStep);
 }
 
 // --- Test Console (only responds when the backend has ENABLE_TEST_CONSOLE) ---

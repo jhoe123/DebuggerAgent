@@ -105,19 +105,31 @@ func (r *CloudRunner) Remediate(ctx context.Context, opts democtl.Options, emit 
 		return api.PipelineResult{Steps: steps, Success: false}
 	}
 
-	prop := r.patches.Latest()
-	if prop == nil {
-		return fail("apply", "No proposed patch to deploy", "run Investigate + approve first")
+	// Resolve the patch set: the explicit consolidation batch, or the single pending patch.
+	applyList := opts.Patches
+	if len(applyList) == 0 {
+		if prop := r.patches.Latest(); prop != nil {
+			applyList = []tools.PatchProposal{*prop}
+		}
+	}
+	if len(applyList) == 0 {
+		return fail("apply", "No proposed patch to deploy", "run Investigate + add to batch first")
 	}
 
-	// Overlay the fix + (resolved) regression test + a Dockerfile onto the source.
-	overlay := map[string]string{prop.File: prop.PatchedContent}
-	files := []string{prop.File}
+	// Overlay every fix + (resolved) regression test + a Dockerfile onto the source.
+	overlay := map[string]string{}
+	var files []string
+	for _, p := range applyList {
+		overlay[p.File] = p.PatchedContent
+		files = append(files, p.File)
+	}
+	// Drive test/rationale resolution from the first patch (one combined gate per build).
+	primary := applyList[0]
 
 	runName := ""
 	if opts.Test {
 		step(api.Step{Stage: "test", Status: "running", Message: "Resolving regression test (reuse or generate)…"})
-		rn, gen, err := r.genTest(ctx, prop.File, prop.Rationale, "")
+		rn, gen, err := r.genTest(ctx, primary.File, primary.Rationale, "")
 		if err != nil {
 			return fail("test", "Test generation failed", err.Error())
 		}

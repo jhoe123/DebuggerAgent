@@ -1,28 +1,45 @@
 import { useState } from "react";
-import type { ApproveResult, Investigation } from "../types";
-import { approvePatch, ask } from "../api";
+import type { Investigation } from "../types";
+import { ask, stagePatch, unstagePatch } from "../api";
 import { downloadMarkdown, toMarkdown } from "../report";
+import { useAppData } from "../context/AppDataContext";
 import { useToast } from "../context/ToastContext";
 import { DiffViewer } from "./DiffViewer";
 
 export function InvestigationPanel({ data, onApproved }: { data: Investigation; onApproved?: () => void }) {
   const { rootCause, confidence, alternatives, proposedPatch, suggestedTest } = data;
-  const [approving, setApproving] = useState(false);
-  const [result, setResult] = useState<ApproveResult | null>(null);
+  const { staged, refreshPatches, refreshArtifacts } = useAppData();
+  const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const toast = useToast();
 
-  async function onApprove() {
-    setApproving(true);
+  const isStaged = staged.some((s) => s.problemId === data.problemId);
+
+  async function onStage() {
+    setBusy(true);
     try {
-      const r = await approvePatch(data.problemId);
-      setResult(r);
-      toast.success(`Patch written to ${r.writtenTo}`);
+      await stagePatch(data.problemId);
+      await refreshPatches();
+      await refreshArtifacts();
+      toast.success("Patch added to the deployment batch");
       onApproved?.();
     } catch (e) {
-      toast.error(`Approve failed: ${String(e)}`);
+      toast.error(`Couldn't stage patch: ${String(e)}`);
     } finally {
-      setApproving(false);
+      setBusy(false);
+    }
+  }
+
+  async function onUnstage() {
+    setBusy(true);
+    try {
+      await unstagePatch(data.problemId);
+      await refreshPatches();
+      await refreshArtifacts();
+    } catch (e) {
+      toast.error(`Couldn't remove patch: ${String(e)}`);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -95,13 +112,16 @@ export function InvestigationPanel({ data, onApproved }: { data: Investigation; 
         </div>
       )}
 
-      {result ? (
+      {isStaged ? (
         <p className="approved">
-          ✓ Patch written to <code>{result.writtenTo}</code> — not merged, not deployed.
+          ✓ Staged — in the deployment batch.{" "}
+          <button className="link-btn" onClick={onUnstage} disabled={busy}>
+            Remove from batch
+          </button>
         </p>
       ) : (
-        <button className="approve-btn" onClick={onApprove} disabled={approving}>
-          {approving ? "Writing patch…" : "Approve patch"}
+        <button className="approve-btn" onClick={onStage} disabled={busy}>
+          {busy ? "Adding…" : "Add to batch"}
         </button>
       )}
 

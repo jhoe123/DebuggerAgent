@@ -18,12 +18,14 @@ import (
 
 	"github.com/patchpilot/backend/internal/agent"
 	"github.com/patchpilot/backend/internal/api"
+	"github.com/patchpilot/backend/internal/artifact"
 	"github.com/patchpilot/backend/internal/autopilot"
 	"github.com/patchpilot/backend/internal/democtl"
 	"github.com/patchpilot/backend/internal/dynatrace"
 	"github.com/patchpilot/backend/internal/history"
 	"github.com/patchpilot/backend/internal/pipeline"
 	"github.com/patchpilot/backend/internal/slack"
+	"github.com/patchpilot/backend/internal/tools"
 )
 
 // remediator runs the apply→test→build→deploy pipeline. Implemented by the local
@@ -38,6 +40,7 @@ type handlers struct {
 	demo     *democtl.Controller // nil unless ENABLE_TEST_CONSOLE=true (local only)
 	runner   remediator          // local (democtl) or cloud (pipeline.CloudRunner)
 	hist     *history.Store
+	arts     *artifact.Store // durable per-problem lifecycle status
 	ap       *autopilot.Engine
 	notifier *slack.Notifier // runtime-configurable Slack digest notifier
 }
@@ -108,11 +111,12 @@ func main() {
 	}
 
 	hist := history.New(200, cfg.PatchOutputDir)
-	ap := autopilot.New(svc, demo, hist)
+	arts := artifact.New(cfg.PatchOutputDir)
+	ap := autopilot.New(svc, demo, hist, arts)
 	// Slack notifier: seeded from SLACK_WEBHOOK_URL but reconfigurable at runtime
 	// from Settings (POST /api/slack/config). Never nil.
 	notifier := slack.New(cfg.SlackWebhookURL)
-	h := &handlers{agent: svc, dt: dt, demo: demo, runner: runner, hist: hist, ap: ap, notifier: notifier}
+	h := &handlers{agent: svc, dt: dt, demo: demo, runner: runner, hist: hist, arts: arts, ap: ap, notifier: notifier}
 
 	// Auto-patch daemon: reacts to newly-detected problems (opt-in via Settings).
 	if dt != nil {
@@ -138,6 +142,12 @@ func main() {
 	mux.HandleFunc("POST /api/investigate/stream", h.investigateStream)
 	mux.HandleFunc("POST /api/approve-patch", h.approvePatch)
 	mux.HandleFunc("POST /api/ask", h.ask)
+	// Patch consolidation batch + durable per-problem status (hosted-safe; staging
+	// just records — the deploy still needs a runner, gated below).
+	mux.HandleFunc("GET /api/patches", h.listPatches)
+	mux.HandleFunc("POST /api/patches/stage", h.stagePatch)
+	mux.HandleFunc("POST /api/patches/unstage", h.unstagePatch)
+	mux.HandleFunc("GET /api/artifacts", h.artifacts)
 	mux.HandleFunc("GET /api/history", h.history)                 // audit log (hosted-safe)
 	mux.HandleFunc("POST /api/instrument/scan", h.instrumentScan) // read-only review (hosted-safe)
 	// Autopilot: hosted-safe (propose-only without democtl; real deploy still needs local mode).
@@ -158,6 +168,7 @@ func main() {
 	// Remediation runs on the local democtl runner or the cloud Cloud Build runner.
 	if h.runner != nil {
 		mux.HandleFunc("POST /api/remediate", h.remediate)
+		mux.HandleFunc("POST /api/pipeline/run", h.pipelineRun) // deploy the consolidated batch
 	}
 
 	// Optional: serve the built React app (Cloud Run). Dev uses the Vite server.
@@ -197,7 +208,7 @@ func (h *handlers) investigate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
 	defer cancel()
 
-	final, _, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, agent.InvestigatePrompt(req.ProblemID), nil)
+	final, patch, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, agent.InvestigatePrompt(req.ProblemID), nil)
 	if err != nil {
 		log.Printf("investigate %q error: %v", req.ProblemID, err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -208,12 +219,19 @@ func (h *handlers) investigate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error(), "raw": final})
 		return
 	}
-	h.recordProposed(req.ProblemID, inv)
+	h.recordProposed(req.ProblemID, inv, patch)
 	writeJSON(w, http.StatusOK, inv)
 }
 
-// recordProposed logs the agent's proposed patch to the audit history.
-func (h *handlers) recordProposed(problemID string, inv api.Investigation) {
+// recordProposed logs the agent's proposed patch to the audit history, remembers it
+// per-problem so it can be staged later, and records the investigation on the
+// problem's durable artifact.
+func (h *handlers) recordProposed(problemID string, inv api.Investigation, patch *tools.PatchProposal) {
+	kind, _ := agent.SplitProblemID(problemID)
+	h.arts.RecordInvestigation(problemID, "", kind, true, inv.RootCause.Summary)
+	if patch != nil {
+		h.agent.Patches().SetProposed(problemID, patch)
+	}
 	if inv.ProposedPatch.File == "" {
 		return
 	}
@@ -263,7 +281,7 @@ func (h *handlers) investigateStream(w http.ResponseWriter, r *http.Request) {
 	onStep := func(stage, status, message string) {
 		sse.step(api.Step{Stage: stage, Status: status, Message: message})
 	}
-	final, _, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, agent.InvestigatePrompt(req.ProblemID), onStep)
+	final, patch, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, agent.InvestigatePrompt(req.ProblemID), onStep)
 	if err != nil {
 		log.Printf("investigate(stream) %q error: %v", req.ProblemID, err)
 		sse.event("error", map[string]string{"error": err.Error()})
@@ -274,7 +292,7 @@ func (h *handlers) investigateStream(w http.ResponseWriter, r *http.Request) {
 		sse.event("error", map[string]string{"error": err.Error(), "raw": final})
 		return
 	}
-	h.recordProposed(req.ProblemID, inv)
+	h.recordProposed(req.ProblemID, inv, patch)
 	sse.step(api.Step{Stage: "investigate", Status: "ok", Message: "Root cause identified"})
 	sse.event("result", inv)
 }
@@ -344,6 +362,109 @@ func (h *handlers) remediate(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	result := h.runner.Remediate(ctx, opts, func(s api.Step) { sse.step(s) })
 	h.hist.RecordPipeline(req.ProblemID, result)
+	sse.event("result", result)
+}
+
+// --- Patch consolidation batch + durable per-problem artifacts ---
+
+// stagedResponse builds the GET /api/patches payload (display fields only).
+func (h *handlers) stagedResponse() api.PatchesResponse {
+	staged := h.agent.Patches().Staged()
+	out := make([]api.StagedPatch, 0, len(staged))
+	for _, sp := range staged {
+		out = append(out, api.StagedPatch{
+			ProblemID:   sp.ProblemID,
+			File:        sp.File,
+			UnifiedDiff: sp.UnifiedDiff,
+			Rationale:   sp.Rationale,
+			StagedAt:    sp.StagedAt.Format(time.RFC3339),
+		})
+	}
+	return api.PatchesResponse{Patches: out}
+}
+
+func (h *handlers) listPatches(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, h.stagedResponse())
+}
+
+// stagePatch adds a problem's proposed fix to the consolidation batch. Staging also
+// writes the approved patch file (the tangible artifact), audits the approval, and
+// marks the problem's status as staged.
+func (h *handlers) stagePatch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProblemID string `json:"problemId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.ProblemID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "problemId required"})
+		return
+	}
+	sp, err := h.agent.Patches().Stage(req.ProblemID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if path, werr := h.agent.Patches().WriteApproved(sp.PatchProposal); werr == nil {
+		h.hist.RecordApproved(req.ProblemID, sp.File, sp.UnifiedDiff, path)
+	}
+	kind, _ := agent.SplitProblemID(req.ProblemID)
+	h.arts.RecordStaged(req.ProblemID, "", kind)
+	writeJSON(w, http.StatusOK, h.stagedResponse())
+}
+
+func (h *handlers) unstagePatch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProblemID string `json:"problemId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	h.agent.Patches().Unstage(req.ProblemID)
+	writeJSON(w, http.StatusOK, h.stagedResponse())
+}
+
+func (h *handlers) artifacts(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, api.ArtifactsResponse{Artifacts: h.arts.List()})
+}
+
+// pipelineRun applies the consolidated batch, then runs test→build→deploy→verify
+// once (SSE), recording the result on every involved problem's artifact.
+func (h *handlers) pipelineRun(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Options *democtl.Options `json:"options"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	sse, ok := newSSE(w)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
+		return
+	}
+	staged := h.agent.Patches().Staged()
+	if len(staged) == 0 {
+		sse.event("error", map[string]string{"error": "no patches staged — add a fix to the batch first"})
+		return
+	}
+	opts := democtl.Options{Apply: true, Test: true, Build: true, Deploy: true}
+	if req.Options != nil {
+		opts = *req.Options
+	}
+	opts.Patches = h.agent.Patches().StagedForApply()
+	scen := map[string]bool{}
+	var problemIDs []string
+	for _, sp := range staged {
+		problemIDs = append(problemIDs, sp.ProblemID)
+		if kind, _ := agent.SplitProblemID(sp.ProblemID); !scen[kind] {
+			scen[kind] = true
+			opts.Scenarios = append(opts.Scenarios, kind)
+		}
+	}
+	// Cloud Build (build + deploy to Cloud Run) can take many minutes; allow for it.
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Minute)
+	defer cancel()
+	result := h.runner.Remediate(ctx, opts, func(s api.Step) { sse.step(s) })
+	h.hist.RecordPipeline(strings.Join(problemIDs, ", "), result)
+	h.arts.RecordRun(problemIDs, result)
+	if result.Success {
+		h.agent.Patches().ClearStaged()
+	}
 	sse.event("result", result)
 }
 

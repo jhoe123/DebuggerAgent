@@ -1,6 +1,6 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
-import type { Problem, TestStatus } from "../types";
-import { listProblems, testStatus, wasMock } from "../api";
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import type { Problem, ProblemArtifact, StagedPatch, TestStatus } from "../types";
+import { listArtifacts, listPatches, listProblems, testStatus, wasMock } from "../api";
 import { usePolling } from "../hooks/usePolling";
 
 interface AppDataValue {
@@ -16,6 +16,13 @@ interface AppDataValue {
   testStatus: TestStatus | undefined;
   refreshTestStatus: () => Promise<void>;
   testUpdatedAt: number | null;
+
+  // Consolidation batch (staged patches) + durable per-problem status artifacts.
+  staged: StagedPatch[];
+  refreshPatches: () => Promise<void>;
+  artifacts: ProblemArtifact[];
+  artifactMap: Record<string, ProblemArtifact>;
+  refreshArtifacts: () => Promise<void>;
 
   // History reload signal.
   historyKey: number;
@@ -48,6 +55,15 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   );
 
   const testPoll = usePolling<TestStatus>(() => testStatus(), 10000, { paused: streaming });
+  const patchesPoll = usePolling<StagedPatch[]>(() => listPatches(), 15000, { paused: streaming });
+  const artifactsPoll = usePolling<ProblemArtifact[]>(() => listArtifacts(), 15000, { paused: streaming });
+
+  const artifacts = artifactsPoll.data ?? [];
+  const artifactMap = useMemo(() => {
+    const m: Record<string, ProblemArtifact> = {};
+    for (const a of artifacts) m[a.problemId] = a;
+    return m;
+  }, [artifacts]);
 
   const value: AppDataValue = {
     problems: problemsPoll.data ?? [],
@@ -60,6 +76,11 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     testStatus: testPoll.data,
     refreshTestStatus: testPoll.refresh,
     testUpdatedAt: testPoll.updatedAt,
+    staged: patchesPoll.data ?? [],
+    refreshPatches: patchesPoll.refresh,
+    artifacts,
+    artifactMap,
+    refreshArtifacts: artifactsPoll.refresh,
     historyKey,
     reloadHistory,
     mock,

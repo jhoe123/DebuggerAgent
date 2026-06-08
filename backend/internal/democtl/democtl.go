@@ -47,13 +47,23 @@ type Options struct {
 
 	// Deployment selects where/how the deploy stage ships the build (see DeploymentSpec).
 	Deployment DeploymentSpec `json:"deployment,omitempty"`
+
+	// Patches is the explicit set of patches to apply in this run (the consolidation
+	// batch). When empty, Remediate falls back to the single pending patch
+	// (patches.Latest()) — the autopilot / single-fix path, left unchanged.
+	Patches []tools.PatchProposal `json:"-"`
+
+	// Scenarios lists the distinct scenarios across the batch (for the test gate and
+	// post-deploy verify). When empty, the single Scenario field is used.
+	Scenarios []string `json:"-"`
 }
 
 // DeploymentSpec selects the deploy target and its parameters. Target is one of:
-//   "" / "local" — restart the local demo_app process (default).
-//   "docker"     — build an image and run it as a container. Params: image, tag, containerName, hostPort.
-//   "script"     — run a (detected or generated) deploy script. Params: scriptPath.
-//   "cloud-run"  — build via Cloud Build and deploy to Cloud Run (handled by the cloud runner).
+//
+//	"" / "local" — restart the local demo_app process (default).
+//	"docker"     — build an image and run it as a container. Params: image, tag, containerName, hostPort.
+//	"script"     — run a (detected or generated) deploy script. Params: scriptPath.
+//	"cloud-run"  — build via Cloud Build and deploy to Cloud Run (handled by the cloud runner).
 type DeploymentSpec struct {
 	Target string            `json:"target,omitempty"`
 	Params map[string]string `json:"params,omitempty"`
@@ -226,18 +236,37 @@ func (c *Controller) Remediate(ctx context.Context, opts Options, emit func(api.
 		return api.PipelineResult{Steps: steps, Success: false, Files: files, Verify: verify}
 	}
 
-	if prop := c.patches.Latest(); prop != nil {
-		files = []string{prop.File}
+	// Resolve the patch set: the explicit batch, or the single pending patch.
+	applyList := opts.Patches
+	if len(applyList) == 0 {
+		if prop := c.patches.Latest(); prop != nil {
+			applyList = []tools.PatchProposal{*prop}
+		}
 	}
+	for _, p := range applyList {
+		files = append(files, p.File)
+	}
+	files = dedupeStrings(files)
+
+	// Resolve the scenarios to test/verify: the batch's, or the single one.
+	scenarios := dedupeStrings(opts.Scenarios)
+	if len(scenarios) == 0 {
+		sc := opts.Scenario
+		if sc == "" {
+			sc = "error"
+		}
+		scenarios = []string{sc}
+	}
+
 	if opts.Apply {
-		step(api.Step{Stage: "apply", Status: "running", Message: "Applying the proposed patch to demo_app source"})
-		if err := c.ApplyPatch(); err != nil {
+		step(api.Step{Stage: "apply", Status: "running", Message: fmt.Sprintf("Applying %d patch(es) to demo_app source", len(applyList))})
+		if err := c.applyPatchSet(applyList); err != nil {
 			return fail("apply", "Apply failed", err.Error())
 		}
-		step(api.Step{Stage: "apply", Status: "ok", Message: "Patch applied to demo_app/main.go"})
+		step(api.Step{Stage: "apply", Status: "ok", Message: "Applied: " + strings.Join(files, ", ")})
 	}
 	if opts.Test {
-		ok, out := c.resolveTest(ctx, opts, step)
+		ok, out := c.resolveTestBatch(ctx, opts, scenarios, step)
 		if !ok {
 			return fail("test", "Tests failed — deploy blocked", out)
 		}
@@ -257,23 +286,62 @@ func (c *Controller) Remediate(ctx context.Context, opts Options, emit func(api.
 		}
 		step(api.Step{Stage: "deploy", Status: "ok", Message: "Deployed (" + targetName(opts.Deployment) + ")"})
 
-		ok, v := c.verifyDeploy(ctx, baseURL, opts.Scenario, step)
-		verify = v
-		if !ok {
+		// Verify each distinct scenario in the batch; aggregate the verdicts.
+		allOK := true
+		var parts []string
+		for _, sc := range scenarios {
+			ok, v := c.verifyDeploy(ctx, baseURL, sc, step)
+			if v != "" {
+				parts = append(parts, v)
+			}
+			if !ok {
+				allOK = false
+			}
+		}
+		verify = strings.Join(parts, " · ")
+		if !allOK {
 			return api.PipelineResult{Steps: steps, Success: false, Files: files, Verify: verify}
 		}
 	}
 	return api.PipelineResult{Steps: steps, Success: true, Files: files, Verify: verify}
 }
 
-// ApplyPatch writes the pending patch's full content to the demo_app source.
+// applyPatchSet writes each patch's full content to the demo_app source.
+func (c *Controller) applyPatchSet(list []tools.PatchProposal) error {
+	if len(list) == 0 {
+		return fmt.Errorf("no patch has been proposed")
+	}
+	for _, prop := range list {
+		dest := filepath.Join(c.demoDir, filepath.Clean(prop.File))
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(dest, []byte(prop.PatchedContent), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ApplyPatch writes the pending (single) patch's full content to the demo_app source.
 func (c *Controller) ApplyPatch() error {
 	prop := c.patches.Latest()
 	if prop == nil {
 		return fmt.Errorf("no patch has been proposed")
 	}
-	dest := filepath.Join(c.demoDir, filepath.Clean(prop.File))
-	return os.WriteFile(dest, []byte(prop.PatchedContent), 0o644)
+	return c.applyPatchSet([]tools.PatchProposal{*prop})
+}
+
+func dedupeStrings(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // RepairFunc regenerates the instrumented files after a failed test/build. It
@@ -545,6 +613,39 @@ func (c *Controller) resolveTest(ctx context.Context, opts Options, step func(ap
 		}
 		return false, out
 	}
+}
+
+// resolveTestBatch is the deploy gate for a (possibly consolidated) set of patches.
+// A single scenario reuses resolveTest (keeping the lazy detect-or-generate path).
+// Multiple scenarios run all their committed regression tests in one go (joined
+// with -run "A|B"); if none of the scenarios has a committed test it falls back to
+// a vet/compile gate so a batch never ships code that doesn't build.
+func (c *Controller) resolveTestBatch(ctx context.Context, opts Options, scenarios []string, step func(api.Step)) (bool, string) {
+	if opts.TestStrategy == "skip" {
+		step(api.Step{Stage: "test", Status: "info", Message: "Test gate skipped (testStrategy=skip)"})
+		return true, "test gate skipped"
+	}
+	if len(scenarios) <= 1 {
+		o := opts
+		if len(scenarios) == 1 {
+			o.Scenario = scenarios[0]
+		}
+		return c.resolveTest(ctx, o, step)
+	}
+
+	var filters []string
+	for _, s := range scenarios {
+		if f := scenarioFilter(s); f != "" {
+			filters = append(filters, f)
+		}
+	}
+	if len(filters) == 0 {
+		step(api.Step{Stage: "test", Status: "running", Message: "Vetting & compiling the batch (gate)"})
+		return c.vet(ctx)
+	}
+	filter := strings.Join(dedupeStrings(filters), "|")
+	step(api.Step{Stage: "test", Status: "running", Message: "Running committed regression tests: " + filter})
+	return c.runTest(ctx, filter)
 }
 
 func (c *Controller) build(ctx context.Context) (bool, string) {

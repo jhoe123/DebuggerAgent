@@ -1,6 +1,14 @@
-import type { AutopilotPhase, Problem } from "../types";
-import type { ProblemStatus } from "../lib/localStore";
+import type { ArtifactOverall, AutopilotPhase, Problem, ProblemArtifact } from "../types";
 import { useAutopilot, isActivePhase } from "../context/AutopilotContext";
+
+// Per-card status chip derived from the durable server artifact's overall state.
+const OVERALL_CHIP: Record<ArtifactOverall, { label: string; cls: string } | null> = {
+  investigated: { label: "investigated ✓", cls: "status-investigated" },
+  staged: { label: "staged ◷", cls: "status-staged" },
+  running: { label: "running ⟳", cls: "status-running" },
+  deployed: { label: "deployed ✓", cls: "status-patched" },
+  failed: { label: "failed ✗", cls: "status-failed" },
+};
 
 const PHASE: Record<AutopilotPhase, { label: string; icon: string }> = {
   queued: { label: "Queued", icon: "•" },
@@ -30,7 +38,7 @@ export function ProblemList({
   problems,
   selectedId,
   onSelect,
-  statusMap,
+  artifactMap,
   showHidden,
   selected,
   onToggleSelect,
@@ -40,7 +48,7 @@ export function ProblemList({
   problems: Problem[];
   selectedId: string | null;
   onSelect: (id: string) => void;
-  statusMap: Record<string, ProblemStatus>;
+  artifactMap: Record<string, ProblemArtifact>;
   showHidden: boolean;
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
@@ -54,7 +62,8 @@ export function ProblemList({
         const occ = p.occurrences ?? p.affectedUsers;
         const scanned = kb(p.grailScannedBytes);
         const run = runs[p.id];
-        const st = statusMap[p.id];
+        const art = artifactMap[p.id];
+        const chip = art ? OVERALL_CHIP[art.overall] : null;
         return (
           <div
             key={p.id}
@@ -134,14 +143,12 @@ export function ProblemList({
               )}
               {p.metric && <span className="mini-chip" title="Latency percentile">{p.metric}</span>}
               {scanned && <span className="mini-chip" title="Dynatrace Grail bytes scanned">Grail: {scanned}</span>}
-              {/* One prioritized local-status chip (patched ▸ failed ▸ investigated) to keep cards clean. */}
-              {st?.patched ? (
-                <span className="mini-chip status-patched" title="A remediation run succeeded">patched ✓</span>
-              ) : st?.failed ? (
-                <span className="mini-chip status-failed" title="A remediation run failed">failed ✗</span>
-              ) : st?.investigated ? (
-                <span className="mini-chip status-investigated" title="Investigated locally">investigated ✓</span>
-              ) : null}
+              {/* Durable lifecycle status from the server artifact (one chip, kept clean). */}
+              {chip && (
+                <span className={`mini-chip ${chip.cls}`} title={`Lifecycle: ${art!.overall}`}>
+                  {chip.label}
+                </span>
+              )}
               {p.dynatraceUrl && (
                 <a
                   className="mini-chip link"

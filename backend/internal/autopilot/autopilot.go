@@ -15,6 +15,7 @@ import (
 
 	"github.com/patchpilot/backend/internal/agent"
 	"github.com/patchpilot/backend/internal/api"
+	"github.com/patchpilot/backend/internal/artifact"
 	"github.com/patchpilot/backend/internal/democtl"
 	"github.com/patchpilot/backend/internal/history"
 )
@@ -27,6 +28,7 @@ type Engine struct {
 	agent     *agent.Service
 	demo      *democtl.Controller // nil => propose-only (no apply/build/deploy)
 	hist      *history.Store
+	arts      *artifact.Store
 	localMode bool
 
 	mu       sync.Mutex
@@ -44,11 +46,12 @@ type Engine struct {
 
 // New builds the engine. demo may be nil (propose-only mode). Config defaults to
 // disabled with all stages on (opt-in via SetConfig).
-func New(ag *agent.Service, demo *democtl.Controller, hist *history.Store) *Engine {
+func New(ag *agent.Service, demo *democtl.Controller, hist *history.Store, arts *artifact.Store) *Engine {
 	return &Engine{
 		agent:     ag,
 		demo:      demo,
 		hist:      hist,
+		arts:      arts,
 		localMode: demo != nil,
 		cfg: api.AutopilotConfig{
 			Enabled: false,
@@ -171,8 +174,11 @@ func (e *Engine) process(parent context.Context, id string) {
 	}
 	if err != nil {
 		e.setPhase(id, "failed", "Investigation failed: "+err.Error(), boolPtr(false))
+		e.arts.RecordInvestigation(id, e.titleOf(id), e.kindOf(id), false, err.Error())
 		return
 	}
+	kind, _ := agent.SplitProblemID(id)
+	e.arts.RecordInvestigation(id, e.titleOf(id), kind, true, "")
 	if patch != nil {
 		e.hist.RecordProposed(id, patch.File, patch.UnifiedDiff, patch.Rationale)
 	}
@@ -187,7 +193,6 @@ func (e *Engine) process(parent context.Context, id string) {
 		return
 	}
 	e.setPhase(id, "remediating", "Applying & verifying the fix…", nil)
-	kind, _ := agent.SplitProblemID(id)
 	opts := democtl.Options{Apply: stages.Apply, Test: stages.Test, Build: stages.Build, Deploy: stages.Deploy, Scenario: kind}
 	res := e.demo.Remediate(runCtx, opts, func(s api.Step) {
 		e.appendStep(id, s)
@@ -198,6 +203,7 @@ func (e *Engine) process(parent context.Context, id string) {
 		return
 	}
 	e.hist.RecordPipeline(id, res)
+	e.arts.RecordRun([]string{id}, res)
 	if res.Success {
 		e.setPhase(id, "deployed", "Fixed & deployed"+verifySuffix(res), boolPtr(true))
 	} else {
@@ -292,6 +298,22 @@ func (e *Engine) setMessage(id, msg string) {
 
 func (e *Engine) appendStep(id string, s api.Step) {
 	e.withRun(id, func(r *api.AutopilotRun) { r.Steps = append(r.Steps, s) })
+}
+
+// titleOf returns the tracked problem title (for artifact display), or "".
+func (e *Engine) titleOf(id string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if r := e.runs[id]; r != nil {
+		return r.Title
+	}
+	return ""
+}
+
+// kindOf returns the problem kind ("error"/"performance") parsed from the id.
+func (e *Engine) kindOf(id string) string {
+	kind, _ := agent.SplitProblemID(id)
+	return kind
 }
 
 func (e *Engine) markHalted(id string) {

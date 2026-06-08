@@ -67,3 +67,58 @@ func TestApplyApprovedNoProposal(t *testing.T) {
 		t.Error("expected error when no patch proposed")
 	}
 }
+
+func TestStageRequiresProposal(t *testing.T) {
+	store, _, _ := newTestStore(t)
+	if _, err := store.Stage("error:svc"); err == nil {
+		t.Error("expected error staging a problem with no proposal")
+	}
+	store.SetProposed("error:svc", &PatchProposal{File: "main.go", PatchedContent: "x"})
+	if _, err := store.Stage("error:svc"); err != nil {
+		t.Fatalf("Stage after SetProposed: %v", err)
+	}
+	if got := store.Staged(); len(got) != 1 || got[0].ProblemID != "error:svc" {
+		t.Errorf("expected 1 staged patch for error:svc, got %+v", got)
+	}
+}
+
+func TestStagedForApplyDedupesByFile(t *testing.T) {
+	store, _, _ := newTestStore(t)
+	store.SetProposed("error:a", &PatchProposal{File: "main.go", PatchedContent: "first"})
+	store.SetProposed("perf:b", &PatchProposal{File: "report.go", PatchedContent: "report"})
+	store.SetProposed("error:c", &PatchProposal{File: "main.go", PatchedContent: "second"})
+	if _, err := store.Stage("error:a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Stage("perf:b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Stage("error:c"); err != nil { // same file as error:a, staged later → wins
+		t.Fatal(err)
+	}
+	apply := store.StagedForApply()
+	if len(apply) != 2 {
+		t.Fatalf("expected 2 files after dedupe, got %d: %+v", len(apply), apply)
+	}
+	for _, p := range apply {
+		if p.File == "main.go" && p.PatchedContent != "second" {
+			t.Errorf("expected latest-staged content for main.go, got %q", p.PatchedContent)
+		}
+	}
+}
+
+func TestUnstageAndClearStaged(t *testing.T) {
+	store, _, _ := newTestStore(t)
+	store.SetProposed("error:a", &PatchProposal{File: "a.go", PatchedContent: "x"})
+	store.SetProposed("error:b", &PatchProposal{File: "b.go", PatchedContent: "y"})
+	_, _ = store.Stage("error:a")
+	_, _ = store.Stage("error:b")
+	store.Unstage("error:a")
+	if got := store.Staged(); len(got) != 1 || got[0].ProblemID != "error:b" {
+		t.Errorf("expected only error:b after Unstage, got %+v", got)
+	}
+	store.ClearStaged()
+	if got := store.Staged(); len(got) != 0 {
+		t.Errorf("expected empty batch after ClearStaged, got %+v", got)
+	}
+}

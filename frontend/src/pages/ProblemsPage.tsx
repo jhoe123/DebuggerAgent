@@ -9,7 +9,8 @@ import { useLocalStore } from "../context/LocalStoreContext";
 import { ProblemList } from "../components/ProblemList";
 import { InvestigationPanel } from "../components/Investigation";
 import { AgentSteps } from "../components/AgentSteps";
-import { Pipeline } from "../components/Pipeline";
+import { BatchPanel } from "../components/BatchPanel";
+import { StageTracker } from "../components/StageTracker";
 import { TestConsole } from "../components/TestConsole";
 import { Skeleton, EmptyState, ErrorState } from "../components/States";
 
@@ -35,6 +36,7 @@ export function ProblemsPage() {
     reloadHistory,
     refreshTestStatus,
     setStreaming,
+    artifactMap,
   } = useAppData();
   const toast = useToast();
   const { runs, cancel } = useAutopilot();
@@ -45,8 +47,6 @@ export function ProblemsPage() {
     clearDismissed,
     saveRun,
     latestInvestigation,
-    latestPipeline,
-    statusMap,
   } = useLocalStore();
 
   const [result, setResult] = useState<Investigation | null>(null);
@@ -231,7 +231,7 @@ export function ProblemsPage() {
                     problems={hiddenProblems}
                     selectedId={selectedId}
                     onSelect={(pid) => navigate(`/problems/${encodeURIComponent(pid)}`)}
-                    statusMap={statusMap}
+                    artifactMap={artifactMap}
                     showHidden
                     selected={selected}
                     onToggleSelect={toggleSelect}
@@ -321,7 +321,7 @@ export function ProblemsPage() {
                     problems={visible}
                     selectedId={selectedId}
                     onSelect={(pid) => navigate(`/problems/${encodeURIComponent(pid)}`)}
-                    statusMap={statusMap}
+                    artifactMap={artifactMap}
                     showHidden={false}
                     selected={selected}
                     onToggleSelect={toggleSelect}
@@ -352,6 +352,10 @@ export function ProblemsPage() {
                 </button>
               }
             />
+          )}
+
+          {selectedId && artifactMap[selectedId] && (
+            <StageTracker artifact={artifactMap[selectedId]} />
           )}
 
           {selectedId && run && (
@@ -389,33 +393,12 @@ export function ProblemsPage() {
 
           {steps.length > 0 && <AgentSteps steps={steps} title="Agent activity" />}
 
-          {result && (
-            <>
-              <InvestigationPanel data={result} onApproved={reloadHistory} />
-              <Pipeline
-                key={result.problemId}
-                available={consoleAvailable}
-                problemId={result.problemId}
-                initialResult={latestPipeline(result.problemId)?.pipeline ?? null}
-                onComplete={(r) => {
-                  if (r) {
-                    const p = problems.find((x) => x.id === result.problemId);
-                    saveRun({
-                      problemId: result.problemId,
-                      title: p?.title,
-                      kind: p?.kind,
-                      type: "pipeline",
-                      pipeline: r,
-                      status: r.success ? "ok" : "failed",
-                    });
-                  }
-                  reloadHistory();
-                }}
-              />
-            </>
-          )}
+          {result && <InvestigationPanel data={result} onApproved={reloadHistory} />}
         </main>
       </div>
+
+      {/* Consolidated patches + run-pipeline (docked; hidden until something is staged). */}
+      <BatchPanel />
     </>
   );
 }
