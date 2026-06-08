@@ -1,9 +1,14 @@
-// Command demo_app is the stand-in "production" service the agent investigates.
+// Command demo_app is the "ShopFlow" storefront — the stand-in "production" service the
+// agent investigates. It is a small e-commerce app (Go API + a React/TS storefront the
+// Go server serves) deliberately seeded with a variety of production issues that surface
+// in Dynatrace via OpenTelemetry: exceptions with stack traces, slow operations, a
+// failing external dependency, intermittent failures, and CPU/memory pressure.
 //
-// /checkout has a deliberately seeded bug (unbounded slice index). It is
-// instrumented with OpenTelemetry: when the bug panics, the handler records an
-// exception (with stack trace) on the active span and exports it to Dynatrace via
-// OTLP. The DebuggerAgent then finds that exception and correlates it to this file.
+// The original two seeded bugs live here and are unchanged so the agent's investigate →
+// patch → test → deploy flow keeps working:
+//   - /checkout  : unbounded slice index → panic (exception recorded on the span).
+//   - /report    : per-item blocking call → high latency (slow operation).
+// The remaining scenarios live in signals.go and resources.go and are reached under /api/*.
 //
 // Run (OTLP env configured — see scripts/run_demo.ps1):
 //
@@ -20,15 +25,12 @@ import (
 	"net/http"
 	"os"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/sdk/resource"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -36,48 +38,41 @@ var tracer = otel.Tracer("checkout-demo")
 
 func main() {
 	ctx := context.Background()
-	shutdown, err := initTracer(ctx)
+	shutdown, err := initObservability(ctx)
 	if err != nil {
 		log.Printf("tracing disabled: %v", err)
 	} else {
 		defer func() { _ = shutdown(context.Background()) }()
 	}
 
-	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+
+	// Liveness + the two legacy seeded-bug routes the agent's democtl pipeline calls
+	// directly (Trigger / Remediate / reachable). Keep these bare paths stable.
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
-	http.HandleFunc("/checkout", checkoutHandler)
-	http.HandleFunc("/report", reportHandler)
+	mux.HandleFunc("/checkout", checkoutHandler)
+	mux.HandleFunc("/report", reportHandler)
+
+	// Storefront API — each endpoint triggers a specific Dynatrace signal (see
+	// signals.go / resources.go for the framing of each).
+	mux.HandleFunc("GET /api/catalog", catalogHandler)
+	mux.HandleFunc("GET /api/recommend", recommendHandler)
+	mux.HandleFunc("GET /api/search", searchHandler)
+	mux.HandleFunc("POST /api/pay", payHandler)
+	mux.HandleFunc("GET /api/giftcard", giftcardHandler)
+	mux.HandleFunc("GET /api/flaky", flakyHandler)
+	mux.HandleFunc("GET /api/cpu", cpuHandler)
+	mux.HandleFunc("GET /api/mem", memHandler)
+
+	// Serve the built storefront SPA at "/" (registered last). Degrades gracefully when
+	// the frontend isn't built so the API stays usable headless (e.g. for the pipeline).
+	mux.Handle("/", storefrontHandler())
 
 	addr := ":9090"
-	log.Printf("demo_app (buggy, OTel-instrumented) listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, nil))
-}
-
-// initTracer wires an OTLP/HTTP exporter from standard OTEL_* env vars. If no
-// endpoint is configured, it returns an error so the app runs without tracing.
-func initTracer(ctx context.Context) (func(context.Context) error, error) {
-	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" && os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") == "" {
-		return nil, fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT not set")
-	}
-	exp, err := otlptracehttp.New(ctx)
-	if err != nil {
-		return nil, err
-	}
-	svc := os.Getenv("OTEL_SERVICE_NAME")
-	if svc == "" {
-		svc = "checkout-demo"
-	}
-	// Schemaless avoids a schema-URL conflict with resource.Default().
-	res, err := resource.Merge(resource.Default(),
-		resource.NewSchemaless(semconv.ServiceName(svc)))
-	if err != nil {
-		return nil, err
-	}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res))
-	otel.SetTracerProvider(tp)
-	log.Printf("OTel tracing enabled (service=%s)", svc)
-	return tp.Shutdown, nil
+	log.Printf("demo_app (ShopFlow storefront, OTel-instrumented) listening on %s", addr)
+	log.Fatal(http.ListenAndServe(addr, mux))
 }
 
 func checkoutHandler(w http.ResponseWriter, r *http.Request) {
@@ -137,4 +132,45 @@ func buildReport(n int) int {
 		total += i
 	}
 	return total
+}
+
+// storefrontHandler serves the built React storefront from DEMO_WEB_DIR (default
+// "web/dist", resolved relative to the working dir). If the frontend isn't built it
+// returns a helpful message at "/" instead of 500, so the API and /healthz stay usable
+// headless (the remediation pipeline never builds the frontend).
+func storefrontHandler() http.Handler {
+	dir := os.Getenv("DEMO_WEB_DIR")
+	if dir == "" {
+		dir = "web/dist"
+	}
+	if _, err := os.Stat(dir + "/index.html"); err != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			fmt.Fprint(w, "ShopFlow storefront UI is not built.\n"+
+				"Build it with: npm --prefix web install && npm --prefix web run build\n"+
+				"The API is live: try /api/catalog or /healthz.\n")
+		})
+	}
+	return spaFileServer(dir)
+}
+
+// spaFileServer serves static files and falls back to index.html for client routes.
+// Mirrors the agent backend's handler: API paths must 404 (not fall back to the SPA).
+func spaFileServer(dir string) http.Handler {
+	fs := http.FileServer(http.Dir(dir))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := os.Stat(dir + r.URL.Path); err != nil && !strings.HasPrefix(r.URL.Path, "/assets") {
+			http.ServeFile(w, r, dir+"/index.html")
+			return
+		}
+		fs.ServeHTTP(w, r)
+	})
 }

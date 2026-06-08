@@ -16,6 +16,10 @@
 node_modules/
 /frontend/dist/
 /frontend/.vite/
+# demo_app storefront build artifacts (keep git status/reset clean for democtl)
+/demo_app/web/node_modules/
+/demo_app/web/dist/
+/demo_app/web/.vite/
 *.tsbuildinfo
 npm-debug.log*
 yarn-debug.log*
