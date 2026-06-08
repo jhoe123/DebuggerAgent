@@ -1,10 +1,12 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -43,14 +45,17 @@ type PatchStore struct {
 }
 
 // NewPatchStore creates a store that validates paths against sandbox and writes
-// approved patches under outDir.
+// approved patches under outDir. It re-hydrates per-problem proposals persisted by a
+// previous run so "Add to batch" survives a server restart.
 func NewPatchStore(sandbox *Sandbox, outDir string) *PatchStore {
-	return &PatchStore{
+	p := &PatchStore{
 		sandbox:  sandbox,
 		outDir:   outDir,
 		proposed: map[string]PatchProposal{},
 		staged:   map[string]StagedPatch{},
 	}
+	p.loadProposed()
+	return p
 }
 
 // Propose records a patch proposal after validating its target path is inside the
@@ -96,7 +101,69 @@ func (p *PatchStore) SetProposed(problemID string, prop *PatchProposal) {
 	}
 	p.mu.Lock()
 	p.proposed[problemID] = *prop
+	p.persistProposed(problemID, *prop)
 	p.mu.Unlock()
+}
+
+// proposedRecord is the on-disk shape of a persisted proposal: the full proposal
+// (including PatchedContent, needed to apply) tagged with its problemId.
+type proposedRecord struct {
+	ProblemID     string `json:"problemId"`
+	PatchProposal        // embedded
+}
+
+// proposedDir is where per-problem proposals are mirrored. Empty => memory only.
+func (p *PatchStore) proposedDir() string {
+	if p.outDir == "" {
+		return ""
+	}
+	return filepath.Join(p.outDir, "proposed")
+}
+
+// persistProposed best-effort writes one proposal to disk so staging survives a
+// restart. Caller holds mu. Failures are ignored (the in-memory map still works).
+func (p *PatchStore) persistProposed(problemID string, prop PatchProposal) {
+	dir := p.proposedDir()
+	if dir == "" {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	if b, err := json.MarshalIndent(proposedRecord{ProblemID: problemID, PatchProposal: prop}, "", "  "); err == nil {
+		_ = os.WriteFile(filepath.Join(dir, safeID(problemID)+".json"), b, 0o644)
+	}
+}
+
+// loadProposed re-hydrates the proposal map from disk. Called from the constructor
+// before the store is shared, so it takes no lock.
+func (p *PatchStore) loadProposed() {
+	dir := p.proposedDir()
+	if dir == "" {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var rec proposedRecord
+		if json.Unmarshal(b, &rec) == nil && rec.ProblemID != "" && rec.File != "" {
+			p.proposed[rec.ProblemID] = rec.PatchProposal
+		}
+	}
+}
+
+// safeID makes a problemId (e.g. "error:checkout") safe as a filename.
+func safeID(id string) string {
+	return strings.NewReplacer(":", "_", "/", "__", "\\", "__", " ", "_").Replace(id)
 }
 
 // Stage adds the problem's most recent proposal to the consolidation batch. It

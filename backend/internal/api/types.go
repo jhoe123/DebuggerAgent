@@ -131,7 +131,9 @@ type ProblemArtifact struct {
 	Overall   string                   `json:"overall"` // investigated|staged|running|deployed|failed|confirmed
 	Stages    map[string]ArtifactStage `json:"stages"`
 	Verify    string                   `json:"verify,omitempty"`
+	Steps     []Step                   `json:"steps,omitempty"`
 	UpdatedAt string                   `json:"updatedAt"` // RFC3339
+
 
 	// Git source (set only when a Git source is configured with branch-per-fix).
 	FixBranch string `json:"fixBranch,omitempty"` // the per-problem branch this fix lives on
@@ -246,6 +248,11 @@ type PipelineSettings struct {
 	DeployTarget  string            `json:"deployTarget"`  // local | docker | script | cloud-run
 	DeployParams  map[string]string `json:"deployParams"`  // image/tag/hostPort · project/region/service/sourceBucket/artifactRepo · scriptPath
 	HealthURL     string            `json:"healthUrl"`     // reachability check URL (full URL or path; defaults to the demo app URL)
+
+	// RunnerAvailable reports whether a remediation runner (local democtl or the cloud
+	// build runner) is wired, so the UI can enable Deploy without depending on the Test
+	// Console being on. Response-only: set by the handler, never stored/accepted on Set.
+	RunnerAvailable bool `json:"runnerAvailable"`
 }
 
 // --- Git source (branch-per-fix + confirm-to-merge; backend is source of truth) ---

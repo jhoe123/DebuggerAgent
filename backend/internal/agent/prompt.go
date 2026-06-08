@@ -21,8 +21,10 @@ func InvestigatePrompt(problemID string) string {
 			"filter service.name == \"" + svc + "\" and span.status_code != \"error\" | summarize " +
 			"p95 = percentile(duration, 95), c = count(), by:{span.name} | sort p95 desc | limit 1` " +
 			"(duration is in nanoseconds). Read the source for that operation, find the code that makes " +
-			"it slow, call propose_patch with an optimization (change ONLY that function; keep the rest of " +
-			"the file byte-identical), then return the final JSON object. rootCause.what should name the " +
+			"it slow, call propose_patch with an optimization (change that function; keep the rest of the " +
+			"file unchanged EXCEPT that the patched file MUST still compile — if your change removes the " +
+			"last use of an imported package, also remove that import so there is no \"imported and not " +
+			"used\" error), then return the final JSON object. rootCause.what should name the " +
 			"slow operation and the cause; suggestedTest should assert the latency is now under budget."
 	}
 	return "Investigate the production errors for the Dynatrace service \"" + svc +

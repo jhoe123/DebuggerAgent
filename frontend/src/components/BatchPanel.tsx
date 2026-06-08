@@ -1,35 +1,79 @@
-import { useState } from "react";
-import type { BuildStrategy, DeployTarget, PipelineOptions, PipelineResult, Step, TestStrategy } from "../types";
-import { runPipeline, unstagePatch } from "../api";
+import { useState, useEffect } from "react";
+import type { DeployTarget, PipelineOptions, PipelineResult, Step } from "../types";
+import { runPipeline, unstagePatch, getPipelineConfig } from "../api";
 import { useAppData } from "../context/AppDataContext";
 import { useToast } from "../context/ToastContext";
 import { AgentSteps } from "./AgentSteps";
 import { DiffViewer } from "./DiffViewer";
+
+const OVERALL_CHIP: Record<string, { label: string; cls: string }> = {
+  investigated: { label: "investigated ✓", cls: "status-investigated" },
+  staged: { label: "staged ◷", cls: "status-staged" },
+  running: { label: "running ⟳", cls: "status-running" },
+  deployed: { label: "deployed ✓", cls: "status-patched" },
+  failed: { label: "failed ✗", cls: "status-failed" },
+  confirmed: { label: "merged ✓", cls: "status-confirmed" },
+};
 
 // BatchPanel is the consolidated-patches + run-pipeline control, mounted at the top
 // of the Problems page. Collapsed by default: a slim bar with a "Deploy {N}" button
 // and an expand toggle that reveals the staged list, strategy selectors, live steps,
 // and result. Hidden until something is staged (or a run is in flight / just finished).
 export function BatchPanel() {
-  const { staged, consoleAvailable, refreshPatches, refreshArtifacts, reloadHistory, setStreaming } = useAppData();
+  const { staged, consoleAvailable, refreshPatches, refreshArtifacts, reloadHistory, setStreaming, artifactMap, clearPatches } = useAppData();
   const toast = useToast();
   const [opts, setOpts] = useState<PipelineOptions>({
     apply: true,
     test: true,
     build: true,
     deploy: true,
-    testStrategy: "auto",
-    buildStrategy: "auto",
-    deployment: { target: "local" },
   });
+  const [deployTarget, setDeployTarget] = useState<DeployTarget>("local");
+  const [runnerAvailable, setRunnerAvailable] = useState(false);
   const [steps, setSteps] = useState<Step[]>([]);
   const [result, setResult] = useState<PipelineResult | null>(null);
   const [running, setRunning] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
+  useEffect(() => {
+    getPipelineConfig()
+      .then((cfg) => {
+        setDeployTarget(cfg.deployTarget);
+        setRunnerAvailable(!!cfg.runnerAvailable);
+      })
+      .catch(console.error);
+  }, []);
+
+  // Deploy is usable when a runner is wired (local democtl OR the cloud-build runner),
+  // independent of whether the local Test Console (/api/test/status) is mounted — so the
+  // hosted cloud-build deployment can deploy without ENABLE_TEST_CONSOLE.
+  const canDeploy = consoleAvailable || runnerAvailable;
+
+  const isCurrentlyRunning = staged.some((s) => artifactMap[s.problemId]?.overall === "running");
+  const isDeploying = running || isCurrentlyRunning;
+  const hasFailed = staged.some((s) => artifactMap[s.problemId]?.overall === "failed");
+
+  // Display states that persist across refreshes
+  const persistedSteps = staged.length > 0 ? (artifactMap[staged[0].problemId]?.steps ?? []) : [];
+  const activeSteps = steps.length > 0
+    ? steps
+    : (persistedSteps.length > 0
+        ? persistedSteps
+        : (isCurrentlyRunning
+            ? [{ stage: "deploy", status: "running", message: "Deployment in progress..." } as Step]
+            : []
+          )
+      );
+  const hasSucceeded = staged.length > 0 && !isDeploying && staged.every((s) => {
+    const status = artifactMap[s.problemId]?.overall;
+    return status === "deployed" || status === "confirmed";
+  });
+  const verifyUrl = staged.map(s => artifactMap[s.problemId]?.verify).find(Boolean);
+  const showResult = result || (hasFailed ? { success: false } as PipelineResult : (hasSucceeded ? { success: true, verify: verifyUrl } as PipelineResult : null));
+
   const n = staged.length;
   // Stay mounted through a run and to show its result even after the batch clears.
-  if (n === 0 && !running && !result) return null;
+  if (n === 0 && !isDeploying && !showResult) return null;
 
   // Two patches touching the same file collapse to the latest-staged one on deploy.
   const fileList = staged.map((s) => s.file);
@@ -41,6 +85,15 @@ export function BatchPanel() {
       await refreshPatches();
     } catch (e) {
       toast.error(`Couldn't remove patch: ${String(e)}`);
+    }
+  }
+
+  async function clear() {
+    try {
+      await clearPatches();
+      toast.success("Deployment batch cleared");
+    } catch (e) {
+      toast.error(`Couldn't clear batch: ${String(e)}`);
     }
   }
 
@@ -81,14 +134,24 @@ export function BatchPanel() {
           Deployment batch <span className="mini-chip">{n}</span>
         </button>
         {n > 0 && (
-          <button
-            className="run-btn"
-            onClick={run}
-            disabled={running || !consoleAvailable}
-            title={consoleAvailable ? "" : "Deploy needs the local Test Console or the cloud-build runner"}
-          >
-            {running ? "Deploying…" : `Deploy ${n}`}
-          </button>
+          <div style={{ display: "flex", gap: "0.5rem", marginLeft: "auto" }}>
+            <button
+              className="ghost-btn"
+              onClick={clear}
+              disabled={isDeploying}
+              style={{ border: "1px solid var(--border)", color: "var(--text)" }}
+            >
+              Clear batch
+            </button>
+            <button
+              className="run-btn"
+              onClick={run}
+              disabled={isDeploying || !canDeploy}
+              title={canDeploy ? "" : "Deploy needs the local Test Console or the cloud-build runner"}
+            >
+              {isDeploying ? "Deploying…" : hasSucceeded ? `Redeploy ${n}` : `Deploy ${n}`}
+            </button>
+          </div>
         )}
       </div>
 
@@ -96,24 +159,33 @@ export function BatchPanel() {
         <div className="batch-body">
           {n > 0 && (
             <div className="batch-list">
-              {staged.map((s) => (
-                <div key={s.problemId} className="batch-row">
-                  <div className="batch-row-top">
-                    <code className="mini-chip">{s.file}</code>
-                    <span className="batch-row-prob">{s.problemId}</span>
-                    <button className="problem-dismiss batch-remove" title="Remove from batch" onClick={() => remove(s.problemId)} disabled={running}>
-                      ✕
-                    </button>
+              {staged.map((s) => {
+                const art = artifactMap[s.problemId];
+                const chip = art ? OVERALL_CHIP[art.overall] : null;
+                return (
+                  <div key={s.problemId} className="batch-row">
+                    <div className="batch-row-top">
+                      <code className="mini-chip">{s.file}</code>
+                      <span className="batch-row-prob">{s.problemId}</span>
+                      {chip && (
+                        <span className={`mini-chip ${chip.cls}`} style={{ marginLeft: "0.5rem" }} title={`Lifecycle: ${art!.overall}`}>
+                          {chip.label}
+                        </span>
+                      )}
+                      <button className="problem-dismiss batch-remove" title="Remove from batch" onClick={() => remove(s.problemId)} disabled={running}>
+                        ✕
+                      </button>
+                    </div>
+                    {s.rationale && <div className="batch-row-rationale muted">{s.rationale}</div>}
+                    {s.unifiedDiff && (
+                      <details className="alternatives">
+                        <summary>View diff</summary>
+                        <DiffViewer diff={s.unifiedDiff} />
+                      </details>
+                    )}
                   </div>
-                  {s.rationale && <div className="batch-row-rationale muted">{s.rationale}</div>}
-                  {s.unifiedDiff && (
-                    <details className="alternatives">
-                      <summary>View diff</summary>
-                      <DiffViewer diff={s.unifiedDiff} />
-                    </details>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -124,57 +196,29 @@ export function BatchPanel() {
             </p>
           )}
 
-          {n > 0 && (
-            <div className="pipeline-opts pipeline-strategy">
-              <label className="strategy-select">
-                Test
-                <select
-                  value={opts.testStrategy}
-                  onChange={(e) => setOpts((o) => ({ ...o, testStrategy: e.target.value as TestStrategy }))}
-                  disabled={running}
-                >
-                  <option value="auto">auto (reuse or generate)</option>
-                  <option value="reuse">reuse only</option>
-                  <option value="generate">generate fresh</option>
-                  <option value="skip">skip</option>
-                </select>
-              </label>
-              <label className="strategy-select">
-                Build
-                <select
-                  value={opts.buildStrategy}
-                  onChange={(e) => setOpts((o) => ({ ...o, buildStrategy: e.target.value as BuildStrategy }))}
-                  disabled={running}
-                >
-                  <option value="auto">auto (script or go build)</option>
-                  <option value="script">build script</option>
-                  <option value="default">go build</option>
-                </select>
-              </label>
-              <label className="strategy-select">
-                Deploy
-                <select
-                  value={opts.deployment?.target ?? "local"}
-                  onChange={(e) => setOpts((o) => ({ ...o, deployment: { ...o.deployment, target: e.target.value as DeployTarget } }))}
-                  disabled={running}
-                >
-                  <option value="local">local process</option>
-                  <option value="docker">docker</option>
-                  <option value="script">deploy script</option>
-                  <option value="cloud-run">cloud run (cloud build)</option>
-                </select>
+          {n > 0 && deployTarget === "cloud-run" && (
+            <div style={{ marginTop: "1rem" }}>
+              <label className="checkbox-label" style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={opts.forceSync ?? false}
+                  onChange={(e) => setOpts((o) => ({ ...o, forceSync: e.target.checked }))}
+                  disabled={isDeploying}
+                />
+                <strong>Force full source upload</strong> (uploads the entire repository instead of a patch overlay)
               </label>
             </div>
           )}
-          {!consoleAvailable && n > 0 && (
+
+          {!canDeploy && n > 0 && (
             <p className="muted">Deploy is unavailable here (no local/cloud runner) — patches stay staged.</p>
           )}
 
-          <AgentSteps steps={steps} />
-          {result && (
-            <p className={result.success ? "approved" : "failed"}>
-              {result.success ? "✓ All patches deployed" : "✗ Pipeline stopped (a gate failed)"}
-              {result.verify && <span className="muted"> · verify: {result.verify}</span>}
+          <AgentSteps steps={activeSteps} />
+          {showResult && (
+            <p className={showResult.success ? "approved" : "failed"}>
+              {showResult.success ? "✓ All patches deployed" : "✗ Pipeline stopped (a gate failed)"}
+              {showResult.verify && <span className="muted"> · verify: {showResult.verify}</span>}
             </p>
           )}
         </div>

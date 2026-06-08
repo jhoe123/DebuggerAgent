@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import type { Investigation, Step } from "../types";
-import { investigateStream, stagePatch, unstagePatch } from "../api";
+import { confirmFix, investigateStream, stagePatch, unstagePatch } from "../api";
 import { useAppData } from "../context/AppDataContext";
 import { useAutopilot, isActivePhase } from "../context/AutopilotContext";
 import { useToast } from "../context/ToastContext";
@@ -40,6 +40,7 @@ export function ProblemsPage() {
     staged,
     refreshPatches,
     refreshArtifacts,
+    gitSource,
   } = useAppData();
   const toast = useToast();
   const { runs, cancel } = useAutopilot();
@@ -55,6 +56,7 @@ export function ProblemsPage() {
   const [result, setResult] = useState<Investigation | null>(null);
   const [steps, setSteps] = useState<Step[]>([]);
   const [investigating, setInvestigating] = useState(false);
+  const [mergeBusy, setMergeBusy] = useState(false);
 
   // List management state.
   const [query, setQuery] = useState("");
@@ -154,6 +156,24 @@ export function ProblemsPage() {
     } finally {
       setInvestigating(false);
       setStreaming(false);
+    }
+  }
+
+  async function handleMerge() {
+    if (!selectedId) return;
+    setMergeBusy(true);
+    try {
+      const res = await confirmFix(selectedId);
+      await refreshArtifacts();
+      saveRun({ problemId: selectedId, type: "confirm", status: res.merged ? "ok" : "failed" });
+      toast.success(
+        res.merged ? `Merged ${res.mergedBranch} → ${res.intoBranch}` : "Confirmation recorded",
+      );
+      reloadHistory();
+    } catch (e) {
+      toast.error(`Confirm failed: ${String(e)}`);
+    } finally {
+      setMergeBusy(false);
     }
   }
 
@@ -396,7 +416,16 @@ export function ProblemsPage() {
           )}
 
           {selectedId && artifactMap[selectedId] && (
-            <StageTracker artifact={artifactMap[selectedId]} />
+            <StageTracker
+              artifact={artifactMap[selectedId]}
+              showMergeButton={
+                gitSource?.enabled &&
+                gitSource?.branchPerFix &&
+                !!gitSource?.workingBranch
+              }
+              onMerge={handleMerge}
+              merging={mergeBusy}
+            />
           )}
 
           {selectedId && run && (

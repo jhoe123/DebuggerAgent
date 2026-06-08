@@ -7,7 +7,7 @@ import (
 )
 
 func TestLifecycleAndOverall(t *testing.T) {
-	s := New(t.TempDir())
+	s := New(t.TempDir(), false)
 	s.RecordInvestigation("error:checkout", "Checkout panic", "error", true, "index out of range")
 	if got := s.List(); len(got) != 1 || got[0].Overall != "investigated" {
 		t.Fatalf("expected overall=investigated, got %+v", got)
@@ -39,7 +39,7 @@ func TestLifecycleAndOverall(t *testing.T) {
 }
 
 func TestRecordRunSplitsAcrossProblemsAndFails(t *testing.T) {
-	s := New(t.TempDir())
+	s := New(t.TempDir(), false)
 	ids := []string{"error:a", "perf:b"}
 	s.RecordRun(ids, api.PipelineResult{
 		Success: false,
@@ -64,14 +64,33 @@ func TestRecordRunSplitsAcrossProblemsAndFails(t *testing.T) {
 
 func TestPersistenceRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	s := New(dir)
+	s := New(dir, false)
 	s.RecordInvestigation("error:checkout", "Panic", "error", true, "fix")
 	s.RecordStaged("error:checkout", "", "")
 
 	// A fresh store over the same dir should reload the artifact.
-	s2 := New(dir)
+	s2 := New(dir, false)
 	got := s2.List()
 	if len(got) != 1 || got[0].ProblemID != "error:checkout" || got[0].Overall != "staged" {
 		t.Fatalf("expected reloaded staged artifact, got %+v", got)
+	}
+}
+
+func TestClearOnStart(t *testing.T) {
+	dir := t.TempDir()
+	s := New(dir, false)
+	s.RecordInvestigation("error:checkout", "Panic", "error", true, "fix")
+	s.RecordStaged("error:checkout", "", "")
+
+	// A fresh store with clearOnStart=false should reload the artifact.
+	s2 := New(dir, false)
+	if len(s2.List()) != 1 {
+		t.Fatalf("expected 1 reloaded artifact, got %d", len(s2.List()))
+	}
+
+	// A fresh store with clearOnStart=true should clear the directory and start empty.
+	s3 := New(dir, true)
+	if len(s3.List()) != 0 {
+		t.Fatalf("expected 0 artifacts after clearOnStart=true, got %d", len(s3.List()))
 	}
 }

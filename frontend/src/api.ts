@@ -136,6 +136,14 @@ export async function unstagePatch(problemId: string): Promise<StagedPatch[]> {
   ).patches ?? [];
 }
 
+export async function clearPatches(): Promise<StagedPatch[]> {
+  return (
+    await real<PatchesResponse>("/api/patches/clear", {
+      method: "POST",
+    })
+  ).patches ?? [];
+}
+
 // listArtifacts returns durable per-problem lifecycle status (empty on error/mock).
 export async function listArtifacts(): Promise<ProblemArtifact[]> {
   try {

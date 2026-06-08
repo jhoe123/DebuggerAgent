@@ -24,16 +24,47 @@ const OVERALL_LABEL: Record<ProblemArtifact["overall"], string> = {
 // StageTracker renders a problem's durable lifecycle status (server artifact) as a
 // row of stage chips, so the UI reflects how far a fix has progressed and survives
 // refreshes/restarts.
-export function StageTracker({ artifact }: { artifact: ProblemArtifact }) {
+export function StageTracker({
+  artifact,
+  onMerge,
+  merging = false,
+  showMergeButton = false,
+}: {
+  artifact: ProblemArtifact;
+  onMerge?: () => void;
+  merging?: boolean;
+  showMergeButton?: boolean;
+}) {
   return (
     <section className={`stage-tracker overall-${artifact.overall}`}>
-      <div className="stage-tracker-head">
+      <div className="stage-tracker-head" style={{ display: "flex", alignItems: "center", width: "100%" }}>
         <span className="stage-overall">{OVERALL_LABEL[artifact.overall] ?? artifact.overall}</span>
-        {artifact.verify && <span className="muted">verify: {artifact.verify}</span>}
+        {artifact.verify && <span className="muted" style={{ marginLeft: "10px" }}>verify: {artifact.verify}</span>}
         {artifact.fixBranch && artifact.overall !== "confirmed" && (
-          <span className="muted">branch: {artifact.fixBranch}</span>
+          <span className="muted" style={{ marginLeft: "10px" }}>branch: {artifact.fixBranch}</span>
+        )}
+        {showMergeButton && artifact.overall === "deployed" && (
+          <button
+            className="approve-btn merge-action-btn"
+            style={{
+              marginLeft: "auto",
+              padding: "4px 12px",
+              fontSize: "0.85rem",
+              cursor: "pointer",
+              borderRadius: "4px",
+              border: "none",
+              background: "var(--color-primary, #4f46e5)",
+              color: "white",
+              fontWeight: "bold"
+            }}
+            onClick={onMerge}
+            disabled={merging}
+          >
+            {merging ? "Merging..." : "Merge to working branch"}
+          </button>
         )}
       </div>
+
       <div className="stage-chips">
         {STAGES.map(({ key, label }) => {
           const st = artifact.stages[key];

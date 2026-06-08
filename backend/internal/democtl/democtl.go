@@ -30,6 +30,8 @@ type Options struct {
 	Build    bool   `json:"build"`
 	Deploy   bool   `json:"deploy"`
 	Scenario string `json:"scenario"` // "error" (default) | "performance"
+	ForceSync bool   `json:"forceSync"`
+
 
 	// TestStrategy controls the deploy gate's test resolution:
 	//   "auto" (default) — reuse a committed/existing test if one covers the fix,

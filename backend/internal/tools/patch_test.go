@@ -82,6 +82,33 @@ func TestStageRequiresProposal(t *testing.T) {
 	}
 }
 
+// TestProposedSurvivesRestart guards the "Add to batch -> 400 no proposed patch"
+// regression: a proposal recorded by one server instance must be stage-able after a
+// restart, since the investigation that produced it is persisted client-side and in
+// the artifact store but the in-memory map is not.
+func TestProposedSurvivesRestart(t *testing.T) {
+	srcRoot := t.TempDir()
+	outDir := t.TempDir()
+	sb, err := NewSandbox(srcRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := NewPatchStore(sb, outDir)
+	prop := &PatchProposal{File: "main.go", PatchedContent: "package main // fixed\n", Rationale: "bounds check"}
+	first.SetProposed("error:checkout-demo", prop)
+
+	// New store over the same outDir == a server restart.
+	restarted := NewPatchStore(sb, outDir)
+	sp, err := restarted.Stage("error:checkout-demo")
+	if err != nil {
+		t.Fatalf("Stage after restart: %v", err)
+	}
+	if sp.PatchedContent != prop.PatchedContent {
+		t.Errorf("reloaded content mismatch: got %q", sp.PatchedContent)
+	}
+}
+
 func TestStagedForApplyDedupesByFile(t *testing.T) {
 	store, _, _ := newTestStore(t)
 	store.SetProposed("error:a", &PatchProposal{File: "main.go", PatchedContent: "first"})

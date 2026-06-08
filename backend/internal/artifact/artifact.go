@@ -40,10 +40,13 @@ type Store struct {
 
 // New returns a store. If baseDir is non-empty it persists to baseDir/artifacts/
 // and loads any existing artifacts on startup.
-func New(baseDir string) *Store {
+func New(baseDir string, clearOnStart bool) *Store {
 	s := &Store{m: map[string]*api.ProblemArtifact{}}
 	if baseDir != "" {
 		s.dir = filepath.Join(baseDir, "artifacts")
+		if clearOnStart {
+			_ = os.RemoveAll(s.dir)
+		}
 		s.load()
 	}
 	return s
@@ -90,6 +93,29 @@ func (s *Store) RecordStaged(problemID, title, kind string) {
 	s.stamp(a)
 }
 
+// RecordRunning marks the pipeline run as active, setting overall=running and clearing steps.
+func (s *Store) RecordRunning(problemIDs []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range problemIDs {
+		a := s.get(id, "", "")
+		a.Overall = "running"
+		a.Steps = nil
+		s.stamp(a)
+	}
+}
+
+// AppendStep appends a step to the running steps of the specified artifacts.
+func (s *Store) AppendStep(problemIDs []string, step api.Step) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range problemIDs {
+		a := s.get(id, "", "")
+		a.Steps = append(a.Steps, step)
+		s.stamp(a)
+	}
+}
+
 // RecordRun attributes a (possibly batched) pipeline result to every problem whose
 // patch was in the run, splitting the result's stages across each artifact.
 func (s *Store) RecordRun(problemIDs []string, res api.PipelineResult) {
@@ -109,9 +135,11 @@ func (s *Store) RecordRun(problemIDs []string, res api.PipelineResult) {
 		} else {
 			a.Overall = "failed"
 		}
+		a.Steps = res.Steps
 		s.stamp(a)
 	}
 }
+
 
 // RecordFixBranch records the per-problem Git fix branch (and whether it has been
 // pushed). It does not change the overall lifecycle state — the fix branch is created

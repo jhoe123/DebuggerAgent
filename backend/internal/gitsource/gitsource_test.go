@@ -61,7 +61,7 @@ func TestBranchPerFixLifecycle(t *testing.T) {
 	runGitT(t, seed, "push", "origin", "main")
 
 	clone := filepath.Join(work, "clone")
-	arts := artifact.New("")
+	arts := artifact.New("", false)
 	var rooted string
 	st := New(Config{
 		RepoURL: origin, WorkingBranch: "main", BranchPrefix: "patchpilot/fix-",

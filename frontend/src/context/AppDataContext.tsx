@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
-import type { Problem, ProblemArtifact, StagedPatch, TestStatus } from "../types";
-import { listArtifacts, listPatches, listProblems, testStatus, wasMock } from "../api";
+import type { GitSourceStatus, Problem, ProblemArtifact, StagedPatch, TestStatus } from "../types";
+import { getGitSource, listArtifacts, listPatches, listProblems, testStatus, wasMock, clearPatches } from "../api";
 import { usePolling } from "../hooks/usePolling";
 
 interface AppDataValue {
@@ -20,6 +20,7 @@ interface AppDataValue {
   // Consolidation batch (staged patches) + durable per-problem status artifacts.
   staged: StagedPatch[];
   refreshPatches: () => Promise<void>;
+  clearPatches: () => Promise<void>;
   artifacts: ProblemArtifact[];
   artifactMap: Record<string, ProblemArtifact>;
   refreshArtifacts: () => Promise<void>;
@@ -34,6 +35,10 @@ interface AppDataValue {
   // Set true while an SSE stream is active so polling pauses (avoids churn).
   streaming: boolean;
   setStreaming: (b: boolean) => void;
+
+  // Git source settings (polled ~15s).
+  gitSource: GitSourceStatus | undefined;
+  refreshGitSource: () => Promise<void>;
 }
 
 const AppDataContext = createContext<AppDataValue | null>(null);
@@ -57,6 +62,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const testPoll = usePolling<TestStatus>(() => testStatus(), 10000, { paused: streaming });
   const patchesPoll = usePolling<StagedPatch[]>(() => listPatches(), 15000, { paused: streaming });
   const artifactsPoll = usePolling<ProblemArtifact[]>(() => listArtifacts(), 15000, { paused: streaming });
+  const gitSourcePoll = usePolling<GitSourceStatus>(() => getGitSource(), 15000, { paused: streaming });
 
   const artifacts = artifactsPoll.data ?? [];
   const artifactMap = useMemo(() => {
@@ -78,6 +84,10 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     testUpdatedAt: testPoll.updatedAt,
     staged: patchesPoll.data ?? [],
     refreshPatches: patchesPoll.refresh,
+    clearPatches: async () => {
+      await clearPatches();
+      await patchesPoll.refresh();
+    },
     artifacts,
     artifactMap,
     refreshArtifacts: artifactsPoll.refresh,
@@ -86,6 +96,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     mock,
     streaming,
     setStreaming,
+    gitSource: gitSourcePoll.data,
+    refreshGitSource: gitSourcePoll.refresh,
   };
 
   return <AppDataContext.Provider value={value}>{children}</AppDataContext.Provider>;

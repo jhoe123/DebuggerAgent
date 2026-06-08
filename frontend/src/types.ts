@@ -148,7 +148,9 @@ export interface ProblemArtifact {
   overall: ArtifactOverall;
   stages: Partial<Record<ArtifactStageKey, ArtifactStage>>;
   verify?: string;
+  steps?: Step[];
   updatedAt: string;
+
   // Git source (set when a Git source is configured with branch-per-fix).
   fixBranch?: string; // the per-problem branch this fix lives on
   pushed?: boolean; // the fix branch was pushed to the remote
@@ -179,7 +181,9 @@ export interface PipelineOptions {
   testStrategy?: TestStrategy; // reuse a test or let the agent generate one (lazy gate)
   buildStrategy?: BuildStrategy;
   deployment?: DeploymentSpec;
+  forceSync?: boolean;
 }
+
 
 export interface TestStatus {
   sourceState: "buggy" | "modified";
@@ -259,6 +263,7 @@ export interface PipelineSettings {
   deployTarget: DeployTarget;
   deployParams: Record<string, string>; // image/tag/hostPort · project/region/service/sourceBucket/artifactRepo · scriptPath
   healthUrl: string; // reachability check URL (full URL or path; defaults to the demo app URL)
+  runnerAvailable?: boolean; // a remediation runner (local or cloud) is wired — Deploy is usable
 }
 
 // --- Git source (branch-per-fix + confirm-to-merge; backend is source of truth) ---

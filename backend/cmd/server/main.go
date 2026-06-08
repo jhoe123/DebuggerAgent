@@ -53,6 +53,16 @@ func main() {
 	cfg := agent.LoadConfig()
 	ctx := context.Background()
 
+	if cfg.ClearIssuesOnStart && cfg.PatchOutputDir != "" {
+		log.Printf("Clearing patch output directory (cache) on start: %s", cfg.PatchOutputDir)
+		if err := os.RemoveAll(cfg.PatchOutputDir); err != nil {
+			log.Printf("WARNING: clear patch output directory: %v", err)
+		}
+		if err := os.MkdirAll(cfg.PatchOutputDir, 0o755); err != nil {
+			log.Printf("WARNING: recreate patch output directory: %v", err)
+		}
+	}
+
 	svc, err := agent.New(ctx, cfg)
 	if err != nil {
 		log.Fatalf("build agent: %v", err)
@@ -89,6 +99,7 @@ func main() {
 	}
 
 	var runner remediator
+	var cloudRunner *pipeline.CloudRunner // non-nil in cloudbuild mode; re-pointed on Git connect
 	if demo != nil {
 		demo.SetTestGenerator(genTest)
 		demo.SetBuildGenerator(genBuild)
@@ -110,6 +121,7 @@ func main() {
 		} else {
 			defer cloud.Close()
 			runner = cloud
+			cloudRunner = cloud
 			log.Printf("Cloud Build remediation ENABLED (deploy %q to Cloud Run in %s) — protect this endpoint (it deploys on approval)", cfg.DemoRunService, cfg.CloudRunRegion)
 		}
 	}
@@ -137,7 +149,7 @@ func main() {
 	}
 
 	hist := history.New(200, cfg.PatchOutputDir)
-	arts := artifact.New(cfg.PatchOutputDir)
+	arts := artifact.New(cfg.PatchOutputDir, cfg.ClearIssuesOnStart)
 	ap := autopilot.New(svc, demo, hist, arts)
 
 	// Managed Git source: clone a repo, branch per fix, and merge on confirm. Re-points
@@ -161,6 +173,12 @@ func main() {
 		}
 		if demo != nil {
 			demo.SetSourceRoot(dir)
+		}
+		// Cloud runner packages source from its own SourceRoot; re-point it at the clone
+		// so cloud builds upload the Git-tracked source (with accumulated fixes), not the
+		// original SOURCE_ROOT.
+		if cloudRunner != nil {
+			cloudRunner.SetSourceRoot(dir)
 		}
 		return nil
 	}
@@ -212,6 +230,7 @@ func main() {
 	mux.HandleFunc("GET /api/patches", h.listPatches)
 	mux.HandleFunc("POST /api/patches/stage", h.stagePatch)
 	mux.HandleFunc("POST /api/patches/unstage", h.unstagePatch)
+	mux.HandleFunc("POST /api/patches/clear", h.clearPatches)
 	mux.HandleFunc("GET /api/artifacts", h.artifacts)
 	mux.HandleFunc("GET /api/history", h.history)                 // audit log (hosted-safe)
 	mux.HandleFunc("POST /api/instrument/scan", h.instrumentScan) // read-only review (hosted-safe)
@@ -353,6 +372,8 @@ func (h *handlers) investigateStream(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
 	defer cancel()
+	stopHeartbeat := startHeartbeat(ctx, sse)
+	defer stopHeartbeat()
 
 	sse.step(api.Step{Stage: "investigate", Status: "running", Message: "Starting investigation…"})
 	onStep := func(stage, status, message string) {
@@ -449,6 +470,7 @@ func (h *handlers) remediate(w http.ResponseWriter, r *http.Request) {
 		if len(o.Deployment.Params) > 0 {
 			opts.Deployment.Params = o.Deployment.Params
 		}
+		opts.ForceSync = o.ForceSync
 	}
 	sse, ok := newSSE(w)
 	if !ok {
@@ -456,11 +478,23 @@ func (h *handlers) remediate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Cloud Build (build + deploy to Cloud Run) can take many minutes; allow for it.
-	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Minute)
+	// Detach from r.Context() so a browser refresh / SSE disconnect can't cancel the
+	// in-flight pipeline (incl. the Gemini call) — the run finishes and records its
+	// result to the artifact store, which the UI reconciles on reload.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 25*time.Minute)
 	defer cancel()
-	result := h.runner.Remediate(ctx, opts, func(s api.Step) { sse.step(s) })
+	stopHeartbeat := startHeartbeat(ctx, sse)
+	defer stopHeartbeat()
+	h.arts.RecordRunning([]string{req.ProblemID})
+	result := h.runner.Remediate(ctx, opts, func(s api.Step) {
+		sse.step(s)
+		h.arts.AppendStep([]string{req.ProblemID}, s)
+	})
 	h.hist.RecordPipeline(req.ProblemID, result)
+	h.arts.RecordRun([]string{req.ProblemID}, result)
 	sse.event("result", result)
+
+
 }
 
 // --- Patch consolidation batch + durable per-problem artifacts ---
@@ -522,6 +556,11 @@ func (h *handlers) unstagePatch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.stagedResponse())
 }
 
+func (h *handlers) clearPatches(w http.ResponseWriter, r *http.Request) {
+	h.agent.Patches().ClearStaged()
+	writeJSON(w, http.StatusOK, h.stagedResponse())
+}
+
 func (h *handlers) artifacts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, api.ArtifactsResponse{Artifacts: h.arts.List()})
 }
@@ -566,6 +605,7 @@ func (h *handlers) pipelineRun(w http.ResponseWriter, r *http.Request) {
 		if len(o.Deployment.Params) > 0 {
 			opts.Deployment.Params = o.Deployment.Params
 		}
+		opts.ForceSync = o.ForceSync
 	}
 	opts.Patches = h.agent.Patches().StagedForApply()
 	scen := map[string]bool{}
@@ -578,16 +618,28 @@ func (h *handlers) pipelineRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Cloud Build (build + deploy to Cloud Run) can take many minutes; allow for it.
-	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Minute)
+	// Detach from r.Context() so a browser refresh / SSE disconnect can't cancel the
+	// in-flight pipeline (incl. the Gemini call) — the run finishes and records its
+	// result to the artifact store, which the UI reconciles on reload.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 25*time.Minute)
 	defer cancel()
-	result := h.runner.Remediate(ctx, opts, func(s api.Step) { sse.step(s) })
+	stopHeartbeat := startHeartbeat(ctx, sse)
+	defer stopHeartbeat()
+	h.arts.RecordRunning(problemIDs)
+	result := h.runner.Remediate(ctx, opts, func(s api.Step) {
+		sse.step(s)
+		h.arts.AppendStep(problemIDs, s)
+	})
 	h.hist.RecordPipeline(strings.Join(problemIDs, ", "), result)
 	h.arts.RecordRun(problemIDs, result)
+
+
 	if result.Success {
 		// Commit each fix onto its isolated branch (push gated). Done before clearing the
 		// batch so the patched content is still available. Never merges — confirm does.
-		h.commitFixes(r.Context(), staged)
-		h.agent.Patches().ClearStaged()
+		// Detached from r.Context() too: a refresh during the deploy mustn't skip the
+		// commit (commitFixes bounds each commit to its own 60s timeout).
+		h.commitFixes(context.WithoutCancel(r.Context()), staged)
 	}
 	sse.event("result", result)
 }
@@ -595,7 +647,11 @@ func (h *handlers) pipelineRun(w http.ResponseWriter, r *http.Request) {
 // --- Pipeline & deploy settings (configured from Settings; hosted-safe) ---
 
 func (h *handlers) pipelineConfig(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, h.pipe.Get())
+	cfg := h.pipe.Get()
+	// Response-only: lets the UI enable Deploy whenever a runner exists (local or cloud),
+	// rather than gating it on the Test Console (/api/test/status) being mounted.
+	cfg.RunnerAvailable = h.runner != nil
+	writeJSON(w, http.StatusOK, cfg)
 }
 
 func (h *handlers) pipelineConfigSet(w http.ResponseWriter, r *http.Request) {
@@ -631,6 +687,8 @@ func (h *handlers) instrumentScan(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
 	defer cancel()
+	stopHeartbeat := startHeartbeat(ctx, sse)
+	defer stopHeartbeat()
 
 	sse.step(api.Step{Stage: "scan", Status: "running", Message: "Scanning source for instrumentation gaps…"})
 	onStep := func(stage, status, message string) {
@@ -663,6 +721,8 @@ func (h *handlers) instrumentApply(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Minute)
 	defer cancel()
+	stopHeartbeat := startHeartbeat(ctx, sse)
+	defer stopHeartbeat()
 
 	selected := h.agent.InstrumentSelected(req.IDs)
 	if len(selected) == 0 {
@@ -963,6 +1023,30 @@ func (s *sseStream) event(name string, v any) {
 }
 
 func (s *sseStream) step(st api.Step) { s.event("step", st) }
+
+func (s *sseStream) ping() {
+	fmt.Fprint(s.w, ": ping\n\n")
+	s.f.Flush()
+}
+
+func startHeartbeat(ctx context.Context, sse *sseStream) func() {
+	stop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				sse.ping()
+			case <-stop:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return func() { close(stop) }
+}
 
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
