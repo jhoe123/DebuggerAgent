@@ -387,6 +387,26 @@ code { background: var(--panel-2); padding: 0.1rem 0.35rem; border-radius: 4px; 
 .switch-row { display: flex; align-items: center; gap: 0.6rem; font-size: 0.92rem; }
 .autonomy-label { margin: 0.8rem 0 0.4rem; font-size: 0.82rem; }
 
+/* Settings tabs */
+.settings-tabs { display: flex; gap: 0.15rem; border-bottom: 1px solid var(--border); margin-bottom: 1.25rem; flex-wrap: wrap; }
+.settings-tab { display: inline-flex; align-items: center; gap: 0.4rem; background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--muted); padding: 0.55rem 0.9rem; font-size: 0.9rem; font-weight: 600; cursor: pointer; margin-bottom: -1px; white-space: nowrap; }
+.settings-tab:hover { color: var(--text); }
+.settings-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.settings-tab-ico { font-size: 0.95rem; line-height: 1; }
+.settings-panel { display: flex; flex-direction: column; gap: 0; }
+
+/* Pipeline & deploy form grid */
+.pipe-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0.8rem 1rem; }
+.pipe-field { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
+.pipe-field > span { font-size: 0.8rem; font-weight: 600; color: var(--muted); }
+.pipe-field select, .pipe-field input { width: 100%; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem 0.7rem; color: var(--text); font: inherit; }
+.pipe-field select:focus, .pipe-field input:focus { border-color: var(--accent); outline: none; }
+.pipe-params { margin-top: 0.4rem; padding-top: 0.8rem; border-top: 1px dashed var(--border); }
+.pipe-actions { display: flex; align-items: center; gap: 0.7rem; margin-top: 1rem; flex-wrap: wrap; }
+.primary-btn { background: var(--accent); color: var(--accent-ink, #04101f); border: none; border-radius: 6px; padding: 0.5rem 0.95rem; font-weight: 700; cursor: pointer; }
+.primary-btn:hover { filter: brightness(1.08); }
+.primary-btn:disabled { opacity: 0.6; cursor: default; filter: none; }
+
 /* ===== Autopilot status ===== */
 .autopilot-row { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.5rem; }
 .autopilot-chip { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.72rem; font-weight: 700; border-radius: 999px; padding: 0.12rem 0.55rem; border: 1px solid var(--border); color: var(--muted); }

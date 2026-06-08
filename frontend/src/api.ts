@@ -12,6 +12,7 @@ import type {
   Investigation,
   PipelineOptions,
   PipelineResult,
+  PipelineSettings,
   Problem,
   SlackConfig,
   SlackStatus,
@@ -142,6 +143,18 @@ export async function setSlackConfig(config: SlackConfig): Promise<SlackStatus> 
 }
 export async function testSlack(): Promise<{ ok: boolean }> {
   return real<{ ok: boolean }>("/api/slack/test", { method: "POST" });
+}
+
+// --- Pipeline & deploy settings (test/build/deploy params + health URL) ---
+
+export async function getPipelineConfig(): Promise<PipelineSettings> {
+  return real<PipelineSettings>("/api/pipeline/config");
+}
+export async function setPipelineConfig(s: PipelineSettings): Promise<PipelineSettings> {
+  return real<PipelineSettings>("/api/pipeline/config", {
+    method: "POST",
+    body: JSON.stringify(s),
+  });
 }
 
 // --- SSE helpers (live reasoning stream + pipeline) ---

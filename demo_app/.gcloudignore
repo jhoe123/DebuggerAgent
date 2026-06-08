@@ -1,0 +1,7 @@
+# Keep the Cloud Build upload lean: the Dockerfile installs/builds the frontend itself,
+# so don't ship node_modules / build output / the local binary.
+web/node_modules/
+web/dist/
+web/.vite/
+demo_app_run*
+*.test

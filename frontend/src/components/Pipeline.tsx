@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { BuildStrategy, DeployTarget, PipelineOptions, PipelineResult, Step, TestStrategy } from "../types";
-import { remediate } from "../api";
+import { getPipelineConfig, remediate } from "../api";
 import { useAppData } from "../context/AppDataContext";
 import { useToast } from "../context/ToastContext";
 import { AgentSteps } from "./AgentSteps";
@@ -35,6 +35,20 @@ export function Pipeline({
   const [steps, setSteps] = useState<Step[]>(initialResult?.steps ?? []);
   const [result, setResult] = useState<PipelineResult | null>(initialResult ?? null);
   const [running, setRunning] = useState(false);
+
+  // Seed the per-run selectors from the saved Pipeline & deploy settings (Settings).
+  useEffect(() => {
+    getPipelineConfig()
+      .then((c) =>
+        setOpts((o) => ({
+          ...o,
+          testStrategy: c.testStrategy,
+          buildStrategy: c.buildStrategy,
+          deployment: { target: c.deployTarget, params: c.deployParams },
+        })),
+      )
+      .catch(() => {});
+  }, []);
 
   if (!available) return null;
 

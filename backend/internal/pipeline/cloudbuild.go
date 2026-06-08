@@ -141,32 +141,58 @@ func (r *CloudRunner) Remediate(ctx context.Context, opts democtl.Options, emit 
 		step(api.Step{Stage: "build", Status: "info", Message: "Generated Dockerfile"})
 	}
 
+	// Effective deploy config: UI/Options params (project/region/service/bucket/repo)
+	// override the construction defaults so Settings can retarget the deploy.
+	eff := r.effective(opts)
+
 	// Package + upload the source to GCS.
 	object := fmt.Sprintf("patchpilot-source/%d.tar.gz", time.Now().UnixNano())
-	step(api.Step{Stage: "build", Status: "running", Message: "Packaging source → gs://" + r.cfg.Bucket + "/" + object})
-	if err := r.uploadSource(ctx, overlay, object); err != nil {
+	step(api.Step{Stage: "build", Status: "running", Message: "Packaging source → gs://" + eff.Bucket + "/" + object})
+	if err := r.uploadSource(ctx, eff, overlay, object); err != nil {
 		return fail("build", "Source upload failed", err.Error())
 	}
 
 	// Submit the build.
-	imageRef := fmt.Sprintf("%s-docker.pkg.dev/%s/%s/%s:%d", r.cfg.Region, r.cfg.Project, r.cfg.ARRepo, r.cfg.Service, time.Now().Unix())
-	build := r.buildSpec(object, imageRef, runName, opts)
+	imageRef := fmt.Sprintf("%s-docker.pkg.dev/%s/%s/%s:%d", eff.Region, eff.Project, eff.ARRepo, eff.Service, time.Now().Unix())
+	build := r.buildSpec(eff, object, imageRef, runName, opts)
 	step(api.Step{Stage: "build", Status: "running", Message: "Submitting Cloud Build…"})
-	buildID, err := r.createBuild(ctx, build)
+	buildID, err := r.createBuild(ctx, eff, build)
 	if err != nil {
 		return fail("build", "Cloud Build submit failed", err.Error())
 	}
 
-	logURL, ok := r.pollBuild(ctx, buildID, step)
+	logURL, ok := r.pollBuild(ctx, eff, buildID, step)
 	if !ok {
 		return api.PipelineResult{Steps: steps, Success: false, Files: files, Verify: logURL}
 	}
-	step(api.Step{Stage: "verify", Status: "ok", Message: fmt.Sprintf("Deployed to Cloud Run service %q (region %s); test gate passed in-build", r.cfg.Service, r.cfg.Region)})
+	step(api.Step{Stage: "verify", Status: "ok", Message: fmt.Sprintf("Deployed to Cloud Run service %q (region %s); test gate passed in-build", eff.Service, eff.Region)})
 	return api.PipelineResult{Steps: steps, Success: true, Files: files, Verify: "cloud build " + logURL}
 }
 
+// effective overlays per-run deploy params (from Options/Settings) onto the construction
+// Config, so the UI's deploy parameters take effect without reconstructing the runner.
+func (r *CloudRunner) effective(opts democtl.Options) Config {
+	c := r.cfg
+	p := opts.Deployment.Params
+	c.Project = paramOr(p, "project", c.Project)
+	c.Region = paramOr(p, "region", c.Region)
+	c.Service = paramOr(p, "service", c.Service)
+	c.Bucket = paramOr(p, "sourceBucket", c.Bucket)
+	c.ARRepo = paramOr(p, "artifactRepo", c.ARRepo)
+	return c
+}
+
+func paramOr(m map[string]string, key, def string) string {
+	if m != nil {
+		if v := strings.TrimSpace(m[key]); v != "" {
+			return v
+		}
+	}
+	return def
+}
+
 // buildSpec assembles the inline Cloud Build: test → docker build → deploy to Cloud Run.
-func (r *CloudRunner) buildSpec(object, imageRef, runName string, opts democtl.Options) *cloudbuildpb.Build {
+func (r *CloudRunner) buildSpec(eff Config, object, imageRef, runName string, opts democtl.Options) *cloudbuildpb.Build {
 	var bsteps []*cloudbuildpb.BuildStep
 	if opts.Test && runName != "" {
 		bsteps = append(bsteps, &cloudbuildpb.BuildStep{
@@ -185,9 +211,9 @@ func (r *CloudRunner) buildSpec(object, imageRef, runName string, opts democtl.O
 	}
 	if opts.Deploy {
 		deployArgs := []string{
-			"run", "deploy", r.cfg.Service,
+			"run", "deploy", eff.Service,
 			"--image", imageRef,
-			"--region", r.cfg.Region,
+			"--region", eff.Region,
 			"--platform", "managed",
 			"--quiet",
 		}
@@ -204,7 +230,7 @@ func (r *CloudRunner) buildSpec(object, imageRef, runName string, opts democtl.O
 	return &cloudbuildpb.Build{
 		Source: &cloudbuildpb.Source{
 			Source: &cloudbuildpb.Source_StorageSource{
-				StorageSource: &cloudbuildpb.StorageSource{Bucket: r.cfg.Bucket, Object: object},
+				StorageSource: &cloudbuildpb.StorageSource{Bucket: eff.Bucket, Object: object},
 			},
 		},
 		Steps:   bsteps,
@@ -227,8 +253,8 @@ func (r *CloudRunner) envVarsArg() string {
 }
 
 // createBuild submits the build and returns its id (from the operation metadata).
-func (r *CloudRunner) createBuild(ctx context.Context, build *cloudbuildpb.Build) (string, error) {
-	op, err := r.cb.CreateBuild(ctx, &cloudbuildpb.CreateBuildRequest{ProjectId: r.cfg.Project, Build: build})
+func (r *CloudRunner) createBuild(ctx context.Context, eff Config, build *cloudbuildpb.Build) (string, error) {
+	op, err := r.cb.CreateBuild(ctx, &cloudbuildpb.CreateBuildRequest{ProjectId: eff.Project, Build: build})
 	if err != nil {
 		return "", err
 	}
@@ -241,10 +267,10 @@ func (r *CloudRunner) createBuild(ctx context.Context, build *cloudbuildpb.Build
 
 // pollBuild polls the build to completion, emitting a step as each Cloud Build step
 // transitions. Returns the log URL and whether the build succeeded.
-func (r *CloudRunner) pollBuild(ctx context.Context, buildID string, step func(api.Step)) (string, bool) {
+func (r *CloudRunner) pollBuild(ctx context.Context, eff Config, buildID string, step func(api.Step)) (string, bool) {
 	seen := map[string]cloudbuildpb.Build_Status{}
 	for {
-		b, err := r.cb.GetBuild(ctx, &cloudbuildpb.GetBuildRequest{ProjectId: r.cfg.Project, Id: buildID})
+		b, err := r.cb.GetBuild(ctx, &cloudbuildpb.GetBuildRequest{ProjectId: eff.Project, Id: buildID})
 		if err != nil {
 			step(api.Step{Stage: "build", Status: "fail", Message: "Lost contact with Cloud Build", Detail: err.Error()})
 			return "", false
@@ -285,8 +311,8 @@ func (r *CloudRunner) pollBuild(ctx context.Context, buildID string, step func(a
 
 // uploadSource tars+gzips the demo_app source (with overlay files replacing/adding on-
 // disk ones) into the GCS source object Cloud Build will unpack.
-func (r *CloudRunner) uploadSource(ctx context.Context, overlay map[string]string, object string) error {
-	w := r.gcs.Bucket(r.cfg.Bucket).Object(object).NewWriter(ctx)
+func (r *CloudRunner) uploadSource(ctx context.Context, eff Config, overlay map[string]string, object string) error {
+	w := r.gcs.Bucket(eff.Bucket).Object(object).NewWriter(ctx)
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)
 
@@ -301,7 +327,7 @@ func (r *CloudRunner) uploadSource(ctx context.Context, overlay map[string]strin
 		return err
 	}
 
-	root := r.cfg.SourceRoot
+	root := eff.SourceRoot
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err

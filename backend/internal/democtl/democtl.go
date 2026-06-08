@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/patchpilot/backend/internal/api"
+	"github.com/patchpilot/backend/internal/settings"
 	"github.com/patchpilot/backend/internal/tools"
 )
 
@@ -78,8 +79,9 @@ type Controller struct {
 	binPath  string
 	otlpEnv  []string
 	patches  *tools.PatchStore
-	testGen  TestGenFunc  // optional: detect-or-generate the regression test (set by server)
-	buildGen BuildGenFunc // optional: generate a build artifact when missing (set by server)
+	testGen  TestGenFunc     // optional: detect-or-generate the regression test (set by server)
+	buildGen BuildGenFunc    // optional: generate a build artifact when missing (set by server)
+	settings *settings.Store // runtime pipeline settings (health-check URL etc.); set by server
 
 	mu   sync.Mutex
 	proc *exec.Cmd
@@ -93,6 +95,9 @@ func (c *Controller) SetTestGenerator(fn TestGenFunc) { c.testGen = fn }
 // SetBuildGenerator wires the builder agent's build-artifact generator. When unset, the
 // build stage falls back to a detected build script or `go build`.
 func (c *Controller) SetBuildGenerator(fn BuildGenFunc) { c.buildGen = fn }
+
+// SetSettings wires the runtime pipeline settings store (read for the health-check URL).
+func (c *Controller) SetSettings(s *settings.Store) { c.settings = s }
 
 // New builds a controller. sourceRoot is the demo_app dir (SOURCE_ROOT).
 func New(sourceRoot, demoURL, dtEnvironment, dtAPIToken string, patches *tools.PatchStore) *Controller {
@@ -638,8 +643,29 @@ func (c *Controller) git(ctx context.Context, args ...string) (string, error) {
 }
 
 func (c *Controller) reachable(ctx context.Context) bool {
-	code, err := c.get(ctx, "/healthz")
-	return err == nil && code == 200
+	// Prefer the configured health URL (Settings). It may be a full URL or a path on the
+	// demo URL. "Reachable" = the service responded (2xx–4xx), not necessarily healthy —
+	// so a 404 still counts as "the demo is up and answering".
+	if c.settings != nil {
+		if u := strings.TrimSpace(c.settings.Get().HealthURL); u != "" {
+			var code int
+			var err error
+			if strings.HasPrefix(u, "http") {
+				code, err = c.getURL(ctx, u, "")
+			} else {
+				code, err = c.get(ctx, u)
+			}
+			return err == nil && code >= 200 && code < 500
+		}
+	}
+	if code, err := c.get(ctx, "/healthz"); err == nil && code == 200 {
+		return true
+	}
+	// Some fronting infra (e.g. Cloud Run's Google Front End) returns 404 for the literal
+	// /healthz path before it reaches the container; fall back to the service root, which
+	// a running storefront always answers (200 for the SPA, or the "not built" notice).
+	code, err := c.get(ctx, "/")
+	return err == nil && code >= 200 && code < 400
 }
 
 func (c *Controller) get(ctx context.Context, path string) (int, error) {
