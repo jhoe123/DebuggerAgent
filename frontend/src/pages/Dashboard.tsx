@@ -3,10 +3,12 @@ import { Link } from "react-router-dom";
 import type { HistoryEntry } from "../types";
 import { listHistory } from "../api";
 import { useAppData } from "../context/AppDataContext";
+import { useAutopilot } from "../context/AutopilotContext";
 import { Skeleton } from "../components/States";
 
 export function Dashboard() {
   const { problems, problemsLoading, consoleAvailable, mock, historyKey } = useAppData();
+  const { config: apConfig, activeCount } = useAutopilot();
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [histLoading, setHistLoading] = useState(true);
 
@@ -55,6 +57,16 @@ export function Dashboard() {
             {consoleAvailable
               ? "Test Console is ON — local autonomy enabled."
               : "Test Console is off — human-gated."}
+          </p>
+          <p className="muted dash-status">
+            {apConfig.enabled ? (
+              <>
+                🟢 <strong>Auto-patch is ON</strong>
+                {activeCount > 0 ? ` — ${activeCount} automating now.` : " — watching for new problems."}
+              </>
+            ) : (
+              <>⚪ Auto-patch is off — <Link to="/settings">enable in Settings</Link>.</>
+            )}
           </p>
         </section>
 

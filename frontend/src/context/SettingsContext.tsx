@@ -3,15 +3,7 @@ import { BACKEND_URL_KEY } from "../api";
 
 export type ThemeMode = "light" | "dark" | "system";
 
-export interface AutonomyDefaults {
-  apply: boolean;
-  test: boolean;
-  build: boolean;
-  deploy: boolean;
-}
-
 const THEME_KEY = "da.theme";
-const AUTONOMY_KEY = "da.autonomy";
 
 interface SettingsValue {
   theme: ThemeMode;
@@ -19,8 +11,6 @@ interface SettingsValue {
   resolvedTheme: "light" | "dark";
   backendUrl: string; // "" => use build-time default
   setBackendUrl: (v: string) => void;
-  autonomy: AutonomyDefaults;
-  setAutonomy: (a: AutonomyDefaults) => void;
 }
 
 const SettingsContext = createContext<SettingsValue | null>(null);
@@ -48,9 +38,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       return "";
     }
   });
-  const [autonomy, setAutonomyState] = useState<AutonomyDefaults>(() =>
-    loadJSON<AutonomyDefaults>(AUTONOMY_KEY, { apply: true, test: true, build: true, deploy: true }),
-  );
   const [sysDark, setSysDark] = useState<boolean>(systemPrefersDark);
 
   useEffect(() => {
@@ -84,19 +71,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       /* ignore */
     }
   };
-  const setAutonomy = (a: AutonomyDefaults) => {
-    setAutonomyState(a);
-    try {
-      localStorage.setItem(AUTONOMY_KEY, JSON.stringify(a));
-    } catch {
-      /* ignore */
-    }
-  };
-
   return (
-    <SettingsContext.Provider
-      value={{ theme, setTheme, resolvedTheme, backendUrl, setBackendUrl, autonomy, setAutonomy }}
-    >
+    <SettingsContext.Provider value={{ theme, setTheme, resolvedTheme, backendUrl, setBackendUrl }}>
       {children}
     </SettingsContext.Provider>
   );

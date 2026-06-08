@@ -18,6 +18,7 @@ import (
 
 	"github.com/debuggeragent/backend/internal/agent"
 	"github.com/debuggeragent/backend/internal/api"
+	"github.com/debuggeragent/backend/internal/autopilot"
 	"github.com/debuggeragent/backend/internal/democtl"
 	"github.com/debuggeragent/backend/internal/dynatrace"
 	"github.com/debuggeragent/backend/internal/history"
@@ -29,6 +30,7 @@ type handlers struct {
 	dt    *dynatrace.Client
 	demo  *democtl.Controller // nil unless ENABLE_TEST_CONSOLE=true (local only)
 	hist  *history.Store
+	ap    *autopilot.Engine
 }
 
 func main() {
@@ -57,7 +59,16 @@ func main() {
 			log.Printf("Test Console + auto-remediation ENABLED (backend owns demo_app at %s)", cfg.DemoAppURL)
 		}
 	}
-	h := &handlers{agent: svc, dt: dt, demo: demo, hist: history.New(200, cfg.PatchOutputDir)}
+	hist := history.New(200, cfg.PatchOutputDir)
+	ap := autopilot.New(svc, demo, hist)
+	h := &handlers{agent: svc, dt: dt, demo: demo, hist: hist, ap: ap}
+
+	// Auto-patch daemon: reacts to newly-detected problems (opt-in via Settings).
+	if dt != nil {
+		go ap.Run(ctx, 30*time.Second, dt.ListProblems)
+	} else {
+		log.Printf("WARNING: Dynatrace unavailable — autopilot poller disabled")
+	}
 
 	// Slack: background poller posting a consolidated digest of active bugs.
 	if n := slack.New(cfg.SlackWebhookURL); n != nil && dt != nil {
@@ -77,6 +88,10 @@ func main() {
 	mux.HandleFunc("POST /api/ask", h.ask)
 	mux.HandleFunc("GET /api/history", h.history)                 // audit log (hosted-safe)
 	mux.HandleFunc("POST /api/instrument/scan", h.instrumentScan) // read-only review (hosted-safe)
+	// Autopilot: hosted-safe (propose-only without democtl; real deploy still needs local mode).
+	mux.HandleFunc("GET /api/autopilot", h.autopilotSnapshot)
+	mux.HandleFunc("POST /api/autopilot/config", h.autopilotConfig)
+	mux.HandleFunc("POST /api/autopilot/cancel", h.autopilotCancel)
 
 	if cfg.EnableTestConsole {
 		mux.HandleFunc("GET /api/test/status", h.testStatus)
@@ -123,7 +138,7 @@ func (h *handlers) investigate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
 	defer cancel()
 
-	final, _, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, investigatePrompt(req.ProblemID), nil)
+	final, _, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, agent.InvestigatePrompt(req.ProblemID), nil)
 	if err != nil {
 		log.Printf("investigate %q error: %v", req.ProblemID, err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -167,32 +182,6 @@ func (h *handlers) approvePatch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, api.ApproveResult{WrittenTo: path})
 }
 
-// splitProblemID parses a composite "<kind>:<service>" problem ID. IDs without a
-// recognized prefix default to the error scenario (backward compatible).
-func splitProblemID(id string) (kind, svc string) {
-	if k, s, ok := strings.Cut(id, ":"); ok && (k == "error" || k == "performance") {
-		return k, s
-	}
-	return "error", id
-}
-
-func investigatePrompt(problemID string) string {
-	kind, svc := splitProblemID(problemID)
-	if kind == "performance" {
-		return "Investigate the PERFORMANCE problem for the Dynatrace service \"" + svc +
-			"\". Find the slowest operation: ONE execute_dql like `fetch spans, from:now()-30d | " +
-			"filter service.name == \"" + svc + "\" and span.status_code != \"error\" | summarize " +
-			"p95 = percentile(duration, 95), c = count(), by:{span.name} | sort p95 desc | limit 1` " +
-			"(duration is in nanoseconds). Read the source for that operation, find the code that makes " +
-			"it slow, call propose_patch with an optimization (change ONLY that function; keep the rest of " +
-			"the file byte-identical), then return the final JSON object. rootCause.what should name the " +
-			"slow operation and the cause; suggestedTest should assert the latency is now under budget."
-	}
-	return "Investigate the production errors for the Dynatrace service \"" + svc +
-		"\". Query its recent error spans, read the offending source file, determine the root cause, " +
-		"call propose_patch with a fix, then return the final JSON object."
-}
-
 // investigateStream runs the agent and streams step milestones (SSE), then a final result event.
 func (h *handlers) investigateStream(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -215,7 +204,7 @@ func (h *handlers) investigateStream(w http.ResponseWriter, r *http.Request) {
 	onStep := func(stage, status, message string) {
 		sse.step(api.Step{Stage: stage, Status: status, Message: message})
 	}
-	final, _, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, investigatePrompt(req.ProblemID), onStep)
+	final, _, err := h.agent.Investigate(ctx, "sess-"+req.ProblemID, agent.InvestigatePrompt(req.ProblemID), onStep)
 	if err != nil {
 		log.Printf("investigate(stream) %q error: %v", req.ProblemID, err)
 		sse.event("error", map[string]string{"error": err.Error()})
@@ -372,6 +361,35 @@ func (h *handlers) instrumentApply(w http.ResponseWriter, r *http.Request) {
 	result := h.demo.ApplyInstrumentation(ctx, files, opts, repair, func(s api.Step) { sse.step(s) })
 	h.hist.RecordInstrumentation(result)
 	sse.event("result", result)
+}
+
+// --- Autopilot (auto-patch daemon) ---
+
+func (h *handlers) autopilotSnapshot(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, h.ap.Snapshot())
+}
+
+func (h *handlers) autopilotConfig(w http.ResponseWriter, r *http.Request) {
+	var cfg api.AutopilotConfig
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid config"})
+		return
+	}
+	h.ap.SetConfig(cfg)
+	writeJSON(w, http.StatusOK, h.ap.Snapshot())
+}
+
+func (h *handlers) autopilotCancel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProblemID string `json:"problemId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.ProblemID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "problemId required"})
+		return
+	}
+	h.ap.Cancel(req.ProblemID)
+	writeJSON(w, http.StatusOK, h.ap.Snapshot())
 }
 
 // filesOfCandidates returns the unique set of files referenced by candidates.

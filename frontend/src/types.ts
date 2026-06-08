@@ -124,6 +124,46 @@ export interface TestStatus {
   demoAppUrl: string;
 }
 
+// --- Autopilot (auto-patch daemon) ---
+
+export interface AutopilotStages {
+  apply: boolean;
+  test: boolean;
+  build: boolean;
+  deploy: boolean;
+}
+
+export interface AutopilotConfig {
+  enabled: boolean;
+  stages: AutopilotStages;
+}
+
+export type AutopilotPhase =
+  | "queued"
+  | "investigating"
+  | "proposed"
+  | "remediating"
+  | "deployed"
+  | "failed"
+  | "halted";
+
+export interface AutopilotRun {
+  problemId: string;
+  title?: string;
+  kind?: "error" | "performance";
+  phase: AutopilotPhase;
+  message?: string;
+  steps?: Step[];
+  success?: boolean;
+  updatedAt: string;
+}
+
+export interface AutopilotSnapshot {
+  config: AutopilotConfig;
+  runs: AutopilotRun[];
+  localMode: boolean; // true when apply/build/deploy is available
+}
+
 export interface TriggerResult {
   sent: number;
   codes: number[];

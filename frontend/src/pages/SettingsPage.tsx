@@ -1,14 +1,16 @@
 import { useState } from "react";
 import { useSettings, type ThemeMode } from "../context/SettingsContext";
 import { useAppData } from "../context/AppDataContext";
+import { useAutopilot } from "../context/AutopilotContext";
 import { useToast } from "../context/ToastContext";
 
 const THEMES: ThemeMode[] = ["light", "dark", "system"];
 const STAGES = ["apply", "test", "build", "deploy"] as const;
 
 export function SettingsPage() {
-  const { theme, setTheme, backendUrl, setBackendUrl, autonomy, setAutonomy } = useSettings();
+  const { theme, setTheme, backendUrl, setBackendUrl } = useSettings();
   const { consoleAvailable, mock, testStatus } = useAppData();
+  const { config, setConfig, localMode } = useAutopilot();
   const toast = useToast();
   const [url, setUrl] = useState(backendUrl);
 
@@ -16,6 +18,22 @@ export function SettingsPage() {
     const v = url.trim();
     setBackendUrl(v);
     toast.success(v ? `Backend set to ${v}` : "Backend reset to default");
+  }
+
+  async function toggleAutopatch() {
+    try {
+      await setConfig({ ...config, enabled: !config.enabled });
+      toast.success(config.enabled ? "Auto-patch disabled" : "Auto-patch enabled");
+    } catch {
+      toast.error("Couldn't update auto-patch");
+    }
+  }
+  async function toggleStage(k: (typeof STAGES)[number]) {
+    try {
+      await setConfig({ ...config, stages: { ...config.stages, [k]: !config.stages[k] } });
+    } catch {
+      toast.error("Couldn't update stages");
+    }
   }
 
   return (
@@ -52,20 +70,37 @@ export function SettingsPage() {
       </section>
 
       <section className="settings-card">
-        <h3>Autonomy defaults</h3>
-        <p className="muted">Default pipeline stages for auto-remediation and instrument-apply.</p>
-        <div className="pipeline-opts">
-          {STAGES.map((k) => (
-            <label key={k} className="stage-toggle">
-              <input
-                type="checkbox"
-                checked={autonomy[k]}
-                onChange={() => setAutonomy({ ...autonomy, [k]: !autonomy[k] })}
-              />{" "}
-              {k}
-            </label>
-          ))}
-        </div>
+        <h3>Auto-patch (autopilot)</h3>
+        <p className="muted">
+          When on, newly-detected problems are automatically investigated and patched per the stages
+          below — no clicks. Each problem shows its live status in Problems, and you can halt any to
+          take over manually.
+        </p>
+        <label className="switch-row">
+          <input type="checkbox" checked={config.enabled} onChange={toggleAutopatch} />
+          <span>
+            <strong>Auto-patch</strong> is {config.enabled ? "ON" : "off"}
+          </span>
+        </label>
+
+        {config.enabled && (
+          <>
+            <p className="muted autonomy-label">Pipeline stages autopilot runs after proposing a fix:</p>
+            <div className="pipeline-opts">
+              {STAGES.map((k) => (
+                <label key={k} className="stage-toggle">
+                  <input type="checkbox" checked={config.stages[k]} onChange={() => toggleStage(k)} /> {k}
+                </label>
+              ))}
+            </div>
+            {!localMode && (
+              <p className="muted truncated-note">
+                Local Test Console is off — autopilot will auto-investigate &amp; propose only (no
+                apply/build/deploy).
+              </p>
+            )}
+          </>
+        )}
       </section>
 
       <section className="settings-card">

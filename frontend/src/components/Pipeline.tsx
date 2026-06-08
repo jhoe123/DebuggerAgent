@@ -1,7 +1,6 @@
 import { useState } from "react";
 import type { PipelineOptions, PipelineResult, Step } from "../types";
 import { remediate } from "../api";
-import { useSettings } from "../context/SettingsContext";
 import { useAppData } from "../context/AppDataContext";
 import { useToast } from "../context/ToastContext";
 import { AgentSteps } from "./AgentSteps";
@@ -20,10 +19,9 @@ export function Pipeline({
   problemId: string;
   onComplete?: () => void;
 }) {
-  const { autonomy } = useSettings();
   const { setStreaming } = useAppData();
   const toast = useToast();
-  const [opts, setOpts] = useState<PipelineOptions>({ ...autonomy });
+  const [opts, setOpts] = useState<PipelineOptions>({ apply: true, test: true, build: true, deploy: true });
   const [steps, setSteps] = useState<Step[]>([]);
   const [result, setResult] = useState<PipelineResult | null>(null);
   const [running, setRunning] = useState(false);

@@ -4,6 +4,8 @@
 import type {
   ApproveResult,
   AskResult,
+  AutopilotConfig,
+  AutopilotSnapshot,
   HistoryEntry,
   HistoryResponse,
   InstrumentationScan,
@@ -105,6 +107,24 @@ export async function testTrigger(): Promise<TriggerResult> {
 }
 export async function testReset(): Promise<TestStatus> {
   return real<TestStatus>("/api/test/reset", { method: "POST" });
+}
+
+// --- Autopilot (auto-patch daemon) — always available; propose-only when local mode is off ---
+
+export async function getAutopilot(): Promise<AutopilotSnapshot> {
+  return real<AutopilotSnapshot>("/api/autopilot");
+}
+export async function setAutopilotConfig(config: AutopilotConfig): Promise<AutopilotSnapshot> {
+  return real<AutopilotSnapshot>("/api/autopilot/config", {
+    method: "POST",
+    body: JSON.stringify(config),
+  });
+}
+export async function cancelAutopilot(problemId: string): Promise<AutopilotSnapshot> {
+  return real<AutopilotSnapshot>("/api/autopilot/cancel", {
+    method: "POST",
+    body: JSON.stringify({ problemId }),
+  });
 }
 
 // --- SSE helpers (live reasoning stream + pipeline) ---
