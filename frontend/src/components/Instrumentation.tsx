@@ -7,6 +7,9 @@ import type {
   Step,
 } from "../types";
 import { applyInstrumentation, scanInstrumentation } from "../api";
+import { useSettings } from "../context/SettingsContext";
+import { useAppData } from "../context/AppDataContext";
+import { useToast } from "../context/ToastContext";
 import { AgentSteps } from "./AgentSteps";
 import { DiffViewer } from "./DiffViewer";
 
@@ -34,6 +37,10 @@ export function InstrumentationPanel({
   const [scanning, setScanning] = useState(false);
   const [applying, setApplying] = useState(false);
   const [result, setResult] = useState<PipelineResult | null>(null);
+
+  const { autonomy } = useSettings();
+  const { setStreaming } = useAppData();
+  const toast = useToast();
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -75,6 +82,7 @@ export function InstrumentationPanel({
 
   async function onScan() {
     setScanning(true);
+    setStreaming(true);
     setSteps([]);
     setResult(null);
     setScan(null);
@@ -83,27 +91,36 @@ export function InstrumentationPanel({
       const s = await scanInstrumentation((st) => setSteps((prev) => [...prev, st]));
       setScan(s);
       setSelected(new Set(s.candidates.map((c) => c.id))); // default: select all
+      toast.info(`Found ${s.candidates.length} instrumentation candidate(s)`);
+    } catch (e) {
+      toast.error(`Scan failed: ${String(e)}`);
     } finally {
       setScanning(false);
+      setStreaming(false);
     }
   }
 
   async function onApply(ids: string[]) {
     if (!available || ids.length === 0) return;
     setApplying(true);
+    setStreaming(true);
     setSteps([]);
     setResult(null);
     try {
       const r = await applyInstrumentation(
         ids,
-        { apply: true, test: true, build: true, deploy: true },
+        { ...autonomy },
         (st) => setSteps((prev) => [...prev, st]),
       );
       setResult(r);
+      if (r.success) toast.success("Instrumentation applied — demo_app rebuilt and healthy");
+      else toast.error("Apply failed — source rolled back");
     } catch (e) {
       setSteps((prev) => [...prev, { stage: "error", status: "fail", message: String(e) }]);
+      toast.error(`Apply error: ${String(e)}`);
     } finally {
       setApplying(false);
+      setStreaming(false);
       onComplete?.();
     }
   }

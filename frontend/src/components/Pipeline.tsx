@@ -1,6 +1,9 @@
 import { useState } from "react";
 import type { PipelineOptions, PipelineResult, Step } from "../types";
 import { remediate } from "../api";
+import { useSettings } from "../context/SettingsContext";
+import { useAppData } from "../context/AppDataContext";
+import { useToast } from "../context/ToastContext";
 import { AgentSteps } from "./AgentSteps";
 
 type StageKey = "apply" | "test" | "build" | "deploy";
@@ -17,7 +20,10 @@ export function Pipeline({
   problemId: string;
   onComplete?: () => void;
 }) {
-  const [opts, setOpts] = useState<PipelineOptions>({ apply: true, test: true, build: true, deploy: true });
+  const { autonomy } = useSettings();
+  const { setStreaming } = useAppData();
+  const toast = useToast();
+  const [opts, setOpts] = useState<PipelineOptions>({ ...autonomy });
   const [steps, setSteps] = useState<Step[]>([]);
   const [result, setResult] = useState<PipelineResult | null>(null);
   const [running, setRunning] = useState(false);
@@ -30,15 +36,20 @@ export function Pipeline({
 
   async function run() {
     setRunning(true);
+    setStreaming(true);
     setSteps([]);
     setResult(null);
     try {
       const r = await remediate(problemId, { ...opts, scenario }, (s) => setSteps((prev) => [...prev, s]));
       setResult(r);
+      if (r.success) toast.success("Remediation succeeded");
+      else toast.error("Remediation stopped — a gate failed");
     } catch (e) {
       setSteps((prev) => [...prev, { stage: "error", status: "fail", message: String(e) }]);
+      toast.error(`Pipeline error: ${String(e)}`);
     } finally {
       setRunning(false);
+      setStreaming(false);
       onComplete?.();
     }
   }

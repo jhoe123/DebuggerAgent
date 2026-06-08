@@ -36,6 +36,9 @@ ENV PORT=8080 \
     PATCH_OUTPUT_DIR=/tmp/patches \
     GOOGLE_GENAI_USE_VERTEXAI=true \
     GOOGLE_CLOUD_LOCATION=global \
-    DT_MCP_DISABLE_TELEMETRY=true
+    DT_MCP_DISABLE_TELEMETRY=true \
+    ENABLE_TEST_CONSOLE=false
+# ^ Test Console defaults ON locally (backend git-resets/builds/runs source); pinned OFF
+# here so the public hosted demo stays human-gated. Do not enable on a shared URL.
 EXPOSE 8080
 CMD ["/app/server"]

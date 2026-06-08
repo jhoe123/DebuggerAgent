@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { ApproveResult, Investigation } from "../types";
 import { approvePatch, ask } from "../api";
 import { downloadMarkdown, toMarkdown } from "../report";
+import { useToast } from "../context/ToastContext";
 import { DiffViewer } from "./DiffViewer";
 
 export function InvestigationPanel({ data, onApproved }: { data: Investigation; onApproved?: () => void }) {
@@ -9,12 +10,17 @@ export function InvestigationPanel({ data, onApproved }: { data: Investigation; 
   const [approving, setApproving] = useState(false);
   const [result, setResult] = useState<ApproveResult | null>(null);
   const [copied, setCopied] = useState(false);
+  const toast = useToast();
 
   async function onApprove() {
     setApproving(true);
     try {
-      setResult(await approvePatch(data.problemId));
+      const r = await approvePatch(data.problemId);
+      setResult(r);
+      toast.success(`Patch written to ${r.writtenTo}`);
       onApproved?.();
+    } catch (e) {
+      toast.error(`Approve failed: ${String(e)}`);
     } finally {
       setApproving(false);
     }
@@ -109,6 +115,7 @@ function FollowUp({ problemId }: { problemId: string }) {
   const [q, setQ] = useState("");
   const [thread, setThread] = useState<{ q: string; a: string }[]>([]);
   const [asking, setAsking] = useState(false);
+  const toast = useToast();
 
   async function onAsk() {
     const question = q.trim();
@@ -120,6 +127,7 @@ function FollowUp({ problemId }: { problemId: string }) {
       setThread((t) => [...t, { q: question, a: answer }]);
     } catch (e) {
       setThread((t) => [...t, { q: question, a: `(error: ${String(e)})` }]);
+      toast.error("Follow-up failed — is the backend reachable?");
     } finally {
       setAsking(false);
     }

@@ -49,7 +49,9 @@ func LoadConfig() Config {
 		PatchOutputDir: resolveRel(baseDir, env("PATCH_OUTPUT_DIR", "./.patches")),
 		Port:           env("PORT", "8080"),
 
-		EnableTestConsole: os.Getenv("ENABLE_TEST_CONSOLE") == "true",
+		// Default ON so the full app works locally; the hosted Cloud Run image pins
+		// ENABLE_TEST_CONSOLE=false (see Dockerfile) to stay human-gated. Opt out with "false".
+		EnableTestConsole: os.Getenv("ENABLE_TEST_CONSOLE") != "false",
 		DemoAppURL:        env("DEMO_APP_URL", "http://localhost:9090"),
 
 		SlackWebhookURL:   os.Getenv("SLACK_WEBHOOK_URL"),
