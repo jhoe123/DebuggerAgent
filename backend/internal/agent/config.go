@@ -40,6 +40,11 @@ type Config struct {
 	ArtifactRegistryRepo string // ARTIFACT_REGISTRY_REPO (Docker repo; default "patchpilot")
 	DemoRunService       string // DEMO_RUN_SERVICE (Cloud Run service name; default "checkout-demo")
 
+	// Pipeline defaults (seed the runtime-configurable PipelineSettings shown in Settings).
+	TestStrategy  string // TEST_STRATEGY  (auto | reuse | generate | skip; default "auto")
+	BuildStrategy string // BUILD_STRATEGY (auto | script | default; default "auto")
+	DeployTarget  string // DEPLOY_TARGET  (local | docker | script | cloud-run; default by mode)
+
 	// Slack notifications (optional). When SlackWebhookURL is set, a background
 	// poller posts a consolidated digest of active bugs.
 	SlackWebhookURL   string        // SLACK_WEBHOOK_URL (secret; never committed)
@@ -77,6 +82,10 @@ func LoadConfig() Config {
 		CloudBuildBucket:     os.Getenv("CLOUD_BUILD_SOURCE_BUCKET"),
 		ArtifactRegistryRepo: env("ARTIFACT_REGISTRY_REPO", "patchpilot"),
 		DemoRunService:       env("DEMO_RUN_SERVICE", "checkout-demo"),
+
+		TestStrategy:  env("TEST_STRATEGY", "auto"),
+		BuildStrategy: env("BUILD_STRATEGY", "auto"),
+		DeployTarget:  os.Getenv("DEPLOY_TARGET"),
 
 		SlackWebhookURL:   os.Getenv("SLACK_WEBHOOK_URL"),
 		SlackPollInterval: parseDuration(env("SLACK_POLL_INTERVAL", "60s"), 60*time.Second),

@@ -24,6 +24,7 @@ import (
 	"github.com/patchpilot/backend/internal/dynatrace"
 	"github.com/patchpilot/backend/internal/history"
 	"github.com/patchpilot/backend/internal/pipeline"
+	"github.com/patchpilot/backend/internal/settings"
 	"github.com/patchpilot/backend/internal/slack"
 	"github.com/patchpilot/backend/internal/tools"
 )
@@ -43,6 +44,7 @@ type handlers struct {
 	arts     *artifact.Store // durable per-problem lifecycle status
 	ap       *autopilot.Engine
 	notifier *slack.Notifier // runtime-configurable Slack digest notifier
+	pipe     *settings.Store // runtime-configurable test/build/deploy settings + health URL
 }
 
 func main() {
@@ -110,13 +112,35 @@ func main() {
 		}
 	}
 
+	// Runtime-configurable pipeline settings (test/build/deploy params + health URL),
+	// seeded from env so the defaults reflect the current deployment. democtl reads the
+	// health URL for its reachability check; the remediate handler uses these as the
+	// base Options.
+	pipe := settings.New(api.PipelineSettings{
+		Mode:          cfg.PipelineMode,
+		TestStrategy:  cfg.TestStrategy,
+		BuildStrategy: cfg.BuildStrategy,
+		DeployTarget:  defaultDeployTarget(cfg),
+		HealthURL:     cfg.DemoAppURL,
+		DeployParams: map[string]string{
+			"project":      cfg.GCPProject,
+			"region":       cfg.CloudRunRegion,
+			"service":      cfg.DemoRunService,
+			"sourceBucket": cfg.CloudBuildBucket,
+			"artifactRepo": cfg.ArtifactRegistryRepo,
+		},
+	})
+	if demo != nil {
+		demo.SetSettings(pipe)
+	}
+
 	hist := history.New(200, cfg.PatchOutputDir)
 	arts := artifact.New(cfg.PatchOutputDir)
 	ap := autopilot.New(svc, demo, hist, arts)
 	// Slack notifier: seeded from SLACK_WEBHOOK_URL but reconfigurable at runtime
 	// from Settings (POST /api/slack/config). Never nil.
 	notifier := slack.New(cfg.SlackWebhookURL)
-	h := &handlers{agent: svc, dt: dt, demo: demo, runner: runner, hist: hist, arts: arts, ap: ap, notifier: notifier}
+	h := &handlers{agent: svc, dt: dt, demo: demo, runner: runner, hist: hist, arts: arts, ap: ap, notifier: notifier, pipe: pipe}
 
 	// Auto-patch daemon: reacts to newly-detected problems (opt-in via Settings).
 	if dt != nil {
@@ -158,6 +182,9 @@ func main() {
 	mux.HandleFunc("GET /api/slack", h.slackStatus)
 	mux.HandleFunc("POST /api/slack/config", h.slackConfig)
 	mux.HandleFunc("POST /api/slack/test", h.slackTest)
+	// Pipeline & deploy settings (test/build/deploy params + health URL), configured from Settings.
+	mux.HandleFunc("GET /api/pipeline/config", h.pipelineConfig)
+	mux.HandleFunc("POST /api/pipeline/config", h.pipelineConfigSet)
 
 	if cfg.EnableTestConsole {
 		mux.HandleFunc("GET /api/test/status", h.testStatus)
@@ -348,9 +375,30 @@ func (h *handlers) remediate(w http.ResponseWriter, r *http.Request) {
 		Options   *democtl.Options `json:"options"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	opts := democtl.Options{Apply: true, Test: true, Build: true, Deploy: true}
-	if req.Options != nil {
-		opts = *req.Options
+	// Base the run on the configured pipeline settings (test/build strategy, deploy
+	// target + params), then overlay any per-request overrides from the Pipeline panel.
+	ps := h.pipe.Get()
+	opts := democtl.Options{
+		Apply: true, Test: true, Build: true, Deploy: true,
+		TestStrategy:  ps.TestStrategy,
+		BuildStrategy: ps.BuildStrategy,
+		Deployment:    democtl.DeploymentSpec{Target: ps.DeployTarget, Params: ps.DeployParams},
+	}
+	if o := req.Options; o != nil {
+		opts.Apply, opts.Test, opts.Build, opts.Deploy = o.Apply, o.Test, o.Build, o.Deploy
+		opts.Scenario = o.Scenario
+		if o.TestStrategy != "" {
+			opts.TestStrategy = o.TestStrategy
+		}
+		if o.BuildStrategy != "" {
+			opts.BuildStrategy = o.BuildStrategy
+		}
+		if o.Deployment.Target != "" {
+			opts.Deployment.Target = o.Deployment.Target
+		}
+		if len(o.Deployment.Params) > 0 {
+			opts.Deployment.Params = o.Deployment.Params
+		}
 	}
 	sse, ok := newSSE(w)
 	if !ok {
@@ -442,9 +490,29 @@ func (h *handlers) pipelineRun(w http.ResponseWriter, r *http.Request) {
 		sse.event("error", map[string]string{"error": "no patches staged — add a fix to the batch first"})
 		return
 	}
-	opts := democtl.Options{Apply: true, Test: true, Build: true, Deploy: true}
-	if req.Options != nil {
-		opts = *req.Options
+	// Base the batch deploy on the configured pipeline settings (test/build strategy,
+	// deploy target + params), then overlay any per-request overrides from BatchPanel.
+	ps := h.pipe.Get()
+	opts := democtl.Options{
+		Apply: true, Test: true, Build: true, Deploy: true,
+		TestStrategy:  ps.TestStrategy,
+		BuildStrategy: ps.BuildStrategy,
+		Deployment:    democtl.DeploymentSpec{Target: ps.DeployTarget, Params: ps.DeployParams},
+	}
+	if o := req.Options; o != nil {
+		opts.Apply, opts.Test, opts.Build, opts.Deploy = o.Apply, o.Test, o.Build, o.Deploy
+		if o.TestStrategy != "" {
+			opts.TestStrategy = o.TestStrategy
+		}
+		if o.BuildStrategy != "" {
+			opts.BuildStrategy = o.BuildStrategy
+		}
+		if o.Deployment.Target != "" {
+			opts.Deployment.Target = o.Deployment.Target
+		}
+		if len(o.Deployment.Params) > 0 {
+			opts.Deployment.Params = o.Deployment.Params
+		}
 	}
 	opts.Patches = h.agent.Patches().StagedForApply()
 	scen := map[string]bool{}
@@ -466,6 +534,33 @@ func (h *handlers) pipelineRun(w http.ResponseWriter, r *http.Request) {
 		h.agent.Patches().ClearStaged()
 	}
 	sse.event("result", result)
+}
+
+// --- Pipeline & deploy settings (configured from Settings; hosted-safe) ---
+
+func (h *handlers) pipelineConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, h.pipe.Get())
+}
+
+func (h *handlers) pipelineConfigSet(w http.ResponseWriter, r *http.Request) {
+	var in api.PipelineSettings
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid pipeline settings"})
+		return
+	}
+	writeJSON(w, http.StatusOK, h.pipe.Set(in))
+}
+
+// defaultDeployTarget seeds the deploy target from env: explicit DEPLOY_TARGET wins,
+// else "cloud-run" in cloudbuild mode, otherwise "local".
+func defaultDeployTarget(cfg agent.Config) string {
+	if cfg.DeployTarget != "" {
+		return cfg.DeployTarget
+	}
+	if cfg.PipelineMode == "cloudbuild" {
+		return "cloud-run"
+	}
+	return "local"
 }
 
 // --- Auto-instrumentation (scan is hosted-safe; apply is local-only) ---

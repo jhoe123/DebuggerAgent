@@ -238,3 +238,14 @@ export interface SlackConfig {
   enabled: boolean;
   webhookUrl?: string; // secret; omit/empty to leave the existing webhook unchanged
 }
+
+// --- Pipeline & deploy settings (backend is source of truth; seeded from env) ---
+
+export interface PipelineSettings {
+  mode: string; // "local" | "cloudbuild" (read-only; env-controlled)
+  testStrategy: TestStrategy;
+  buildStrategy: BuildStrategy;
+  deployTarget: DeployTarget;
+  deployParams: Record<string, string>; // image/tag/hostPort · project/region/service/sourceBucket/artifactRepo · scriptPath
+  healthUrl: string; // reachability check URL (full URL or path; defaults to the demo app URL)
+}

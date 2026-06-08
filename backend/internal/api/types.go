@@ -229,3 +229,15 @@ type SlackStatus struct {
 	Configured bool   `json:"configured"`        // a webhook is set
 	Preview    string `json:"preview,omitempty"` // masked webhook for display
 }
+
+// PipelineSettings is the runtime-configurable test/build/deploy configuration shown in
+// Settings. The backend is the source of truth (seeded from env), so the server-side
+// reachability check can read the configured health URL. Mode is read-only (env-controlled).
+type PipelineSettings struct {
+	Mode          string            `json:"mode"`          // PIPELINE_MODE: "local" | "cloudbuild" (read-only)
+	TestStrategy  string            `json:"testStrategy"`  // auto | reuse | generate | skip
+	BuildStrategy string            `json:"buildStrategy"` // auto | script | default
+	DeployTarget  string            `json:"deployTarget"`  // local | docker | script | cloud-run
+	DeployParams  map[string]string `json:"deployParams"`  // image/tag/hostPort · project/region/service/sourceBucket/artifactRepo · scriptPath
+	HealthURL     string            `json:"healthUrl"`     // reachability check URL (full URL or path; defaults to the demo app URL)
+}

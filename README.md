@@ -192,7 +192,7 @@ gcloud run deploy patchpilot --source . --region us-central1 --allow-unauthentic
 `GOOGLE_CLOUD_LOCATION=global`, `WEB_DIR`, `SOURCE_ROOT`, and `PATCH_OUTPUT_DIR=/tmp/patches`
 are baked into the image. For production use Secret Manager (`--set-secrets`) for the token.
 
-## For hackathon judges
+## Testing
 
 - **Hosted URL:** https://patchpilot-460077240357.us-central1.run.app — **no login required.**
 - **Test flow:** open the URL → select the **checkout-demo** problem (a real `index out of range`
