@@ -18,6 +18,7 @@ const OVERALL_LABEL: Record<ProblemArtifact["overall"], string> = {
   running: "Running pipeline",
   deployed: "Deployed",
   failed: "Failed",
+  confirmed: "Merged & confirmed",
 };
 
 // StageTracker renders a problem's durable lifecycle status (server artifact) as a
@@ -29,6 +30,9 @@ export function StageTracker({ artifact }: { artifact: ProblemArtifact }) {
       <div className="stage-tracker-head">
         <span className="stage-overall">{OVERALL_LABEL[artifact.overall] ?? artifact.overall}</span>
         {artifact.verify && <span className="muted">verify: {artifact.verify}</span>}
+        {artifact.fixBranch && artifact.overall !== "confirmed" && (
+          <span className="muted">branch: {artifact.fixBranch}</span>
+        )}
       </div>
       <div className="stage-chips">
         {STAGES.map(({ key, label }) => {

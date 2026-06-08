@@ -1,8 +1,9 @@
 import { useState } from "react";
 import type { Investigation } from "../types";
-import { ask, stagePatch, unstagePatch } from "../api";
+import { ask, confirmFix, stagePatch, unstagePatch } from "../api";
 import { downloadMarkdown, toMarkdown } from "../report";
 import { useAppData } from "../context/AppDataContext";
+import { useLocalStore } from "../context/LocalStoreContext";
 import { useToast } from "../context/ToastContext";
 import { DiffViewer } from "./DiffViewer";
 
@@ -18,12 +19,34 @@ export function InvestigationPanel({
   reinvestigating?: boolean;
 }) {
   const { rootCause, confidence, alternatives, proposedPatch, suggestedTest } = data;
-  const { staged, refreshPatches, refreshArtifacts } = useAppData();
+  const { staged, refreshPatches, refreshArtifacts, artifactMap } = useAppData();
+  const { saveRun } = useLocalStore();
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const toast = useToast();
 
   const isStaged = staged.some((s) => s.problemId === data.problemId);
+  // Confirm-to-merge: available once the fix is deployed on its own branch.
+  const art = artifactMap[data.problemId];
+  const confirmed = art?.overall === "confirmed";
+  const canConfirm = !!art?.fixBranch && art.overall === "deployed";
+
+  async function onConfirm() {
+    setBusy(true);
+    try {
+      const res = await confirmFix(data.problemId);
+      await refreshArtifacts();
+      saveRun({ problemId: data.problemId, type: "confirm", status: res.merged ? "ok" : "failed" });
+      toast.success(
+        res.merged ? `Merged ${res.mergedBranch} → ${res.intoBranch}` : "Confirmation recorded",
+      );
+      onApproved?.();
+    } catch (e) {
+      toast.error(`Confirm failed: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function onStage() {
     setBusy(true);
@@ -123,7 +146,20 @@ export function InvestigationPanel({
       )}
 
       <div className="investigation-actions">
-        {isStaged ? (
+        {confirmed ? (
+          <span className="approved">
+            ✓ Fix confirmed — merged into the working branch and the fix branch was cleaned up.
+          </span>
+        ) : canConfirm ? (
+          <div className="confirm-fix">
+            <button className="approve-btn" onClick={onConfirm} disabled={busy || reinvestigating}>
+              {busy ? "Merging…" : "Confirm fixed — merge & clean up branch"}
+            </button>
+            <p className="muted">
+              Merges <code>{art?.fixBranch}</code> into the working branch and deletes the fix branch.
+            </p>
+          </div>
+        ) : isStaged ? (
           <span className="approved">
             ✓ Staged — in the deployment batch.{" "}
             <button className="link-btn" onClick={onUnstage} disabled={busy || reinvestigating}>

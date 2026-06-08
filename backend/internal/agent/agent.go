@@ -60,6 +60,7 @@ type proposePatchResult struct {
 type Service struct {
 	runner  *runner.Runner
 	patches *tools.PatchStore
+	sandbox *tools.Sandbox // shared source sandbox (re-pointable via SetSourceRoot)
 
 	instrument *runner.Runner
 	instStore  *tools.InstrumentStore
@@ -217,7 +218,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	}
 
 	return &Service{
-		runner: r, patches: patches,
+		runner: r, patches: patches, sandbox: sb,
 		instrument: ir, instStore: instStore,
 		builder: br, artifacts: artifacts,
 	}, nil
@@ -225,6 +226,16 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 
 // Patches exposes the patch store (used by the approve-patch endpoint).
 func (s *Service) Patches() *tools.PatchStore { return s.patches }
+
+// SetSourceRoot re-points the shared source sandbox at a new root (e.g. a connected
+// Git source clone). All three agents and the patch store share this sandbox, so one
+// update re-points every source read/patch path. Safe to call at runtime.
+func (s *Service) SetSourceRoot(root string) error {
+	if s.sandbox == nil {
+		return fmt.Errorf("sandbox unavailable")
+	}
+	return s.sandbox.SetRoot(root)
+}
 
 // Investigate runs the agent. It streams text chunks to onText (for SSE) and
 // returns the final aggregated text plus the proposed patch (if any).

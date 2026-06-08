@@ -22,6 +22,7 @@ import (
 	"github.com/patchpilot/backend/internal/autopilot"
 	"github.com/patchpilot/backend/internal/democtl"
 	"github.com/patchpilot/backend/internal/dynatrace"
+	"github.com/patchpilot/backend/internal/gitsource"
 	"github.com/patchpilot/backend/internal/history"
 	"github.com/patchpilot/backend/internal/pipeline"
 	"github.com/patchpilot/backend/internal/settings"
@@ -43,8 +44,9 @@ type handlers struct {
 	hist     *history.Store
 	arts     *artifact.Store // durable per-problem lifecycle status
 	ap       *autopilot.Engine
-	notifier *slack.Notifier // runtime-configurable Slack digest notifier
-	pipe     *settings.Store // runtime-configurable test/build/deploy settings + health URL
+	notifier *slack.Notifier    // runtime-configurable Slack digest notifier
+	pipe     *settings.Store    // runtime-configurable test/build/deploy settings + health URL
+	gs       *gitsource.Manager // managed Git source (branch-per-fix + confirm-to-merge)
 }
 
 func main() {
@@ -137,10 +139,49 @@ func main() {
 	hist := history.New(200, cfg.PatchOutputDir)
 	arts := artifact.New(cfg.PatchOutputDir)
 	ap := autopilot.New(svc, demo, hist, arts)
+
+	// Managed Git source: clone a repo, branch per fix, and merge on confirm. Re-points
+	// the read_source sandbox and (local) pipeline at the clone when connected. Mutating
+	// ops are gated by ENABLE_GIT_SOURCE; status/config stay available either way.
+	gitStore := gitsource.New(gitsource.Config{
+		RepoURL:            cfg.GitSourceRepoURL,
+		AuthToken:          cfg.GitSourceAuthToken,
+		WorkingBranch:      cfg.GitSourceWorkingBranch,
+		BranchPrefix:       cfg.GitSourceBranchPrefix,
+		BranchPerFix:       cfg.GitSourceBranchPerFix,
+		AutoMergeOnConfirm: cfg.GitSourceAutoMerge,
+		PushEnabled:        cfg.GitSourcePushEnabled,
+		CommitAuthorName:   cfg.GitSourceCommitName,
+		CommitAuthorEmail:  cfg.GitSourceCommitEmail,
+		CloneDir:           cfg.GitSourceCloneDir,
+	})
+	gitRoot := func(dir string) error {
+		if err := svc.SetSourceRoot(dir); err != nil {
+			return err
+		}
+		if demo != nil {
+			demo.SetSourceRoot(dir)
+		}
+		return nil
+	}
+	gs := gitsource.NewManager(gitStore, arts, cfg.EnableGitSource, gitRoot)
+	ap.SetGitSource(gs)
+	if cfg.EnableGitSource && gs.Available() && cfg.GitSourceRepoURL != "" {
+		go func() {
+			cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+			if _, err := gs.Connect(cctx, nil); err != nil {
+				log.Printf("WARNING: git source auto-connect failed: %v", err)
+			} else {
+				log.Printf("Git source connected: %s (working branch %s)", gs.Status(cctx).RepoURLPreview, cfg.GitSourceWorkingBranch)
+			}
+		}()
+	}
+
 	// Slack notifier: seeded from SLACK_WEBHOOK_URL but reconfigurable at runtime
 	// from Settings (POST /api/slack/config). Never nil.
 	notifier := slack.New(cfg.SlackWebhookURL)
-	h := &handlers{agent: svc, dt: dt, demo: demo, runner: runner, hist: hist, arts: arts, ap: ap, notifier: notifier, pipe: pipe}
+	h := &handlers{agent: svc, dt: dt, demo: demo, runner: runner, hist: hist, arts: arts, ap: ap, notifier: notifier, pipe: pipe, gs: gs}
 
 	// Auto-patch daemon: reacts to newly-detected problems (opt-in via Settings).
 	if dt != nil {
@@ -185,6 +226,15 @@ func main() {
 	// Pipeline & deploy settings (test/build/deploy params + health URL), configured from Settings.
 	mux.HandleFunc("GET /api/pipeline/config", h.pipelineConfig)
 	mux.HandleFunc("POST /api/pipeline/config", h.pipelineConfigSet)
+	// Git source: status/config are side-effect-free and always available; connect/branch/
+	// confirm/cleanup mutate the working tree and are gated by ENABLE_GIT_SOURCE (checked in
+	// the manager). confirm-fix is the ONLY path that merges a fix into the working branch.
+	mux.HandleFunc("GET /api/git-source", h.gitSourceStatus)
+	mux.HandleFunc("POST /api/git-source/config", h.gitSourceConfigSet)
+	mux.HandleFunc("POST /api/git-source/connect", h.gitSourceConnect)
+	mux.HandleFunc("POST /api/git-source/branch", h.gitSourceBranch)
+	mux.HandleFunc("POST /api/git-source/cleanup", h.gitSourceCleanup)
+	mux.HandleFunc("POST /api/confirm-fix", h.confirmFix)
 
 	if cfg.EnableTestConsole {
 		mux.HandleFunc("GET /api/test/status", h.testStatus)
@@ -457,6 +507,9 @@ func (h *handlers) stagePatch(w http.ResponseWriter, r *http.Request) {
 	}
 	kind, _ := agent.SplitProblemID(req.ProblemID)
 	h.arts.RecordStaged(req.ProblemID, "", kind)
+	// When a Git source is connected with branch-per-fix, create the isolated branch now
+	// so the UI can surface it; the fix is committed to it after a successful pipeline run.
+	h.maybeCreateFixBranch(r.Context(), req.ProblemID)
 	writeJSON(w, http.StatusOK, h.stagedResponse())
 }
 
@@ -531,6 +584,9 @@ func (h *handlers) pipelineRun(w http.ResponseWriter, r *http.Request) {
 	h.hist.RecordPipeline(strings.Join(problemIDs, ", "), result)
 	h.arts.RecordRun(problemIDs, result)
 	if result.Success {
+		// Commit each fix onto its isolated branch (push gated). Done before clearing the
+		// batch so the patched content is still available. Never merges — confirm does.
+		h.commitFixes(r.Context(), staged)
 		h.agent.Patches().ClearStaged()
 	}
 	sse.event("result", result)
@@ -691,6 +747,133 @@ func (h *handlers) slackTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// --- Git source (branch-per-fix + confirm-to-merge) ---
+
+// gitSourceStatus returns the display-safe Git source status (token never returned).
+func (h *handlers) gitSourceStatus(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	writeJSON(w, http.StatusOK, h.gs.Status(ctx))
+}
+
+// gitSourceConfigSet merges a config update (empty token preserves the stored secret).
+func (h *handlers) gitSourceConfigSet(w http.ResponseWriter, r *http.Request) {
+	var in api.GitSourceConfig
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid git source config"})
+		return
+	}
+	h.gs.SetConfig(in)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	writeJSON(w, http.StatusOK, h.gs.Status(ctx))
+}
+
+// gitSourceConnect clones-or-fetches the repo and re-points the source root at it.
+func (h *handlers) gitSourceConnect(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	if _, err := h.gs.Connect(ctx, nil); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, h.gs.Status(ctx))
+}
+
+// gitSourceBranch creates a problem's fix branch on demand (when branch-per-fix is on).
+func (h *handlers) gitSourceBranch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProblemID string `json:"problemId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.ProblemID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "problemId required"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	branch, err := h.gs.CreateFixBranch(ctx, req.ProblemID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"branch": branch})
+}
+
+// confirmFix is the human merge gate: it merges the problem's fix branch into the
+// working branch (pushing + deleting per config). It is the ONLY merge trigger.
+func (h *handlers) confirmFix(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProblemID string `json:"problemId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.ProblemID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "problemId required"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	res, err := h.gs.ConfirmFix(ctx, req.ProblemID, nil)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	h.hist.RecordApproved(req.ProblemID, res.MergedBranch, "", "merged into "+res.IntoBranch)
+	// Clean up once every open fix branch has been confirmed.
+	if len(h.gs.Status(ctx).Branches) == 0 {
+		_, _ = h.gs.CleanupConfirmed(ctx)
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// gitSourceCleanup deletes the fix branches of all confirmed problems.
+func (h *handlers) gitSourceCleanup(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	removed, err := h.gs.CleanupConfirmed(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
+}
+
+// maybeCreateFixBranch creates the per-problem fix branch when a Git source is connected
+// with branch-per-fix on. Best-effort: failures don't block staging.
+func (h *handlers) maybeCreateFixBranch(ctx context.Context, problemID string) {
+	if h.gs == nil || !h.gs.IsConnected() || !h.gs.Config().BranchPerFix {
+		return
+	}
+	c, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if _, err := h.gs.CreateFixBranch(c, problemID); err != nil {
+		log.Printf("git source: create fix branch for %s: %v", problemID, err)
+	}
+}
+
+// commitFixes commits each problem's patched files onto its own fix branch (push gated
+// by config). It only commits to isolated branches — it never merges; confirmation is
+// the merge gate. Best-effort: failures are logged, not fatal.
+func (h *handlers) commitFixes(ctx context.Context, staged []tools.StagedPatch) {
+	if h.gs == nil || !h.gs.IsConnected() || !h.gs.Config().BranchPerFix {
+		return
+	}
+	byProblem := map[string]map[string]string{}
+	for _, sp := range staged {
+		if byProblem[sp.ProblemID] == nil {
+			byProblem[sp.ProblemID] = map[string]string{}
+		}
+		byProblem[sp.ProblemID][sp.File] = sp.PatchedContent
+	}
+	for id, files := range byProblem {
+		c, cancel := context.WithTimeout(ctx, 60*time.Second)
+		if _, _, err := h.gs.CommitPatch(c, id, files, "PatchPilot fix for "+id); err != nil {
+			log.Printf("git source: commit fix for %s: %v", id, err)
+		}
+		cancel()
+	}
 }
 
 // otlpEnvMap derives the OTEL_* env to set on the Cloud Run-deployed demo_app so it

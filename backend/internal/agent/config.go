@@ -49,6 +49,22 @@ type Config struct {
 	// poller posts a consolidated digest of active bugs.
 	SlackWebhookURL   string        // SLACK_WEBHOOK_URL (secret; never committed)
 	SlackPollInterval time.Duration // SLACK_POLL_INTERVAL (default 60s)
+
+	// Git source (optional): clone an external repo, branch per fix, and merge on
+	// confirm. Mutating ops (connect/branch/merge/push) require EnableGitSource, which
+	// defaults ON (opt out with ENABLE_GIT_SOURCE=false). Pushing still needs a token +
+	// PushEnabled, so a default-on flag with no repo configured is harmless.
+	EnableGitSource        bool   // ENABLE_GIT_SOURCE — gates clone/branch/merge/push (default on)
+	GitSourceRepoURL       string // GIT_SOURCE_REPO_URL (https clone URL; no creds)
+	GitSourceAuthToken     string // GIT_SOURCE_TOKEN (secret HTTPS PAT; never committed)
+	GitSourceWorkingBranch string // GIT_SOURCE_WORKING_BRANCH (default "main")
+	GitSourceBranchPrefix  string // GIT_SOURCE_BRANCH_PREFIX (default "patchpilot/fix-")
+	GitSourceBranchPerFix  bool   // GIT_SOURCE_BRANCH_PER_FIX (default on)
+	GitSourceAutoMerge     bool   // GIT_SOURCE_AUTO_MERGE (default on)
+	GitSourcePushEnabled   bool   // GIT_SOURCE_PUSH_ENABLED (default off)
+	GitSourceCommitName    string // GIT_SOURCE_COMMIT_NAME (default "PatchPilot")
+	GitSourceCommitEmail   string // GIT_SOURCE_COMMIT_EMAIL
+	GitSourceCloneDir      string // GIT_SOURCE_CLONE_DIR (default <PATCH_OUTPUT_DIR>/gitsrc)
 }
 
 // LoadConfig loads .env (best-effort) then reads configuration from the environment.
@@ -89,6 +105,18 @@ func LoadConfig() Config {
 
 		SlackWebhookURL:   os.Getenv("SLACK_WEBHOOK_URL"),
 		SlackPollInterval: parseDuration(env("SLACK_POLL_INTERVAL", "60s"), 60*time.Second),
+
+		EnableGitSource:        os.Getenv("ENABLE_GIT_SOURCE") != "false", // default on; opt out with "false"
+		GitSourceRepoURL:       env("GIT_SOURCE_REPO_URL", "https://github.com/jhoe123/patchpilot-demo-app.git"),
+		GitSourceAuthToken:     os.Getenv("GIT_SOURCE_TOKEN"),
+		GitSourceWorkingBranch: env("GIT_SOURCE_WORKING_BRANCH", "main"),
+		GitSourceBranchPrefix:  env("GIT_SOURCE_BRANCH_PREFIX", "patchpilot/fix-"),
+		GitSourceBranchPerFix:  os.Getenv("GIT_SOURCE_BRANCH_PER_FIX") != "false", // default on; opt out with "false"
+		GitSourceAutoMerge:     os.Getenv("GIT_SOURCE_AUTO_MERGE") != "false", // default on
+		GitSourcePushEnabled:   os.Getenv("GIT_SOURCE_PUSH_ENABLED") == "true",
+		GitSourceCommitName:    env("GIT_SOURCE_COMMIT_NAME", "PatchPilot"),
+		GitSourceCommitEmail:   env("GIT_SOURCE_COMMIT_EMAIL", "patchpilot@local"),
+		GitSourceCloneDir:      resolveRel(baseDir, env("GIT_SOURCE_CLONE_DIR", filepath.Join(env("PATCH_OUTPUT_DIR", "./.patches"), "gitsrc"))),
 	}
 }
 

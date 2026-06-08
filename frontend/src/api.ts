@@ -7,6 +7,9 @@ import type {
   AskResult,
   AutopilotConfig,
   AutopilotSnapshot,
+  ConfirmFixResult,
+  GitSourceConfig,
+  GitSourceStatus,
   HistoryEntry,
   HistoryResponse,
   InstrumentationScan,
@@ -204,6 +207,31 @@ export async function setPipelineConfig(s: PipelineSettings): Promise<PipelineSe
   return real<PipelineSettings>("/api/pipeline/config", {
     method: "POST",
     body: JSON.stringify(s),
+  });
+}
+
+// --- Git source (branch-per-fix + confirm-to-merge; token never returned by GET) ---
+
+export async function getGitSource(): Promise<GitSourceStatus> {
+  return real<GitSourceStatus>("/api/git-source");
+}
+export async function setGitSourceConfig(config: GitSourceConfig): Promise<GitSourceStatus> {
+  return real<GitSourceStatus>("/api/git-source/config", {
+    method: "POST",
+    body: JSON.stringify(config),
+  });
+}
+// connectGitSource clones-or-fetches the repo and re-points the source root at it.
+// May take a while (clone), so callers should show a busy state.
+export async function connectGitSource(): Promise<GitSourceStatus> {
+  return real<GitSourceStatus>("/api/git-source/connect", { method: "POST" });
+}
+// confirmFix merges a problem's fix branch into the working branch and deletes it.
+// The backend updates the durable artifact (overall=confirmed) so it survives refresh.
+export async function confirmFix(problemId: string): Promise<ConfirmFixResult> {
+  return real<ConfirmFixResult>("/api/confirm-fix", {
+    method: "POST",
+    body: JSON.stringify({ problemId }),
   });
 }
 
