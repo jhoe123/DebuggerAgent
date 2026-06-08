@@ -39,7 +39,9 @@ ENV PORT=8080 \
     GOOGLE_CLOUD_LOCATION=global \
     DT_MCP_DISABLE_TELEMETRY=true \
     ENABLE_TEST_CONSOLE=true
-# ^ Test Console defaults ON locally (backend git-resets/builds/runs source); pinned OFF
-# here so the public hosted demo stays human-gated. Do not enable on a shared URL.
+# ^ Intentionally ON for the hosted live-autopatch demo: the backend git-resets/builds/
+# runs the bundled demo_app and the auto-remediation pipeline can apply→test→build→
+# deploy→verify (incl. batched auto-patch). NOTE: anyone with the URL can trigger
+# writes/deploys against the ephemeral demo_app — keep this URL for demos.
 EXPOSE 8080
 CMD ["/app/server"]

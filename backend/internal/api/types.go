@@ -270,7 +270,17 @@ type GitSourceConfig struct {
 	PushEnabled        bool   `json:"pushEnabled"`         // permission gate: push to the remote (else local-only)
 	CommitAuthorName   string `json:"commitAuthorName"`
 	CommitAuthorEmail  string `json:"commitAuthorEmail"`
-	CloneDir           string `json:"cloneDir,omitempty"` // where the repo is cloned (default <PATCH_OUTPUT_DIR>/gitsrc)
+	CloneDir           string `json:"cloneDir,omitempty"`   // where the repo is cloned (default <PATCH_OUTPUT_DIR>/gitsrc)
+	BaseBranch         string `json:"baseBranch,omitempty"` // transient: base for creating a NEW working branch (only used at first checkout)
+}
+
+// GitValidateResult is the POST /api/git-source/validate payload: it reports whether a
+// repo URL (+ optional token) is reachable and lists its remote branches, without cloning.
+type GitValidateResult struct {
+	Valid         bool     `json:"valid"`
+	Branches      []string `json:"branches"`
+	DefaultBranch string   `json:"defaultBranch,omitempty"`
+	Error         string   `json:"error,omitempty"`
 }
 
 // GitFixBranch is one active per-problem fix branch.

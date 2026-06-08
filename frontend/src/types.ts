@@ -286,6 +286,16 @@ export interface GitSourceConfig {
   commitAuthorName: string;
   commitAuthorEmail: string;
   cloneDir?: string;
+  baseBranch?: string; // transient: base for creating a NEW working branch (used only at first clone)
+}
+
+// GitValidateResult is the POST /api/git-source/validate payload: whether a repo URL
+// (+ optional token) is reachable and the remote branches it exposes — without cloning.
+export interface GitValidateResult {
+  valid: boolean;
+  branches: string[];
+  defaultBranch?: string;
+  error?: string;
 }
 
 // GitSourceStatus is the GET /api/git-source payload. It never returns the raw token

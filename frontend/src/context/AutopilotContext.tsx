@@ -15,7 +15,7 @@ interface AutopilotValue {
 }
 
 const DEFAULT_CONFIG: AutopilotConfig = {
-  enabled: false,
+  enabled: true,
   stages: { apply: true, test: true, build: true, deploy: true },
 };
 

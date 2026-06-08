@@ -150,7 +150,7 @@ func main() {
 
 	hist := history.New(200, cfg.PatchOutputDir)
 	arts := artifact.New(cfg.PatchOutputDir, cfg.ClearIssuesOnStart)
-	ap := autopilot.New(svc, demo, hist, arts)
+	ap := autopilot.New(svc, demo, runner, hist, arts)
 
 	// Managed Git source: clone a repo, branch per fix, and merge on confirm. Re-points
 	// the read_source sandbox and (local) pipeline at the clone when connected. Mutating
@@ -250,7 +250,9 @@ func main() {
 	// the manager). confirm-fix is the ONLY path that merges a fix into the working branch.
 	mux.HandleFunc("GET /api/git-source", h.gitSourceStatus)
 	mux.HandleFunc("POST /api/git-source/config", h.gitSourceConfigSet)
+	mux.HandleFunc("POST /api/git-source/validate", h.gitSourceValidate)
 	mux.HandleFunc("POST /api/git-source/connect", h.gitSourceConnect)
+	mux.HandleFunc("POST /api/git-source/connect/stream", h.gitSourceConnectStream)
 	mux.HandleFunc("POST /api/git-source/branch", h.gitSourceBranch)
 	mux.HandleFunc("POST /api/git-source/cleanup", h.gitSourceCleanup)
 	mux.HandleFunc("POST /api/confirm-fix", h.confirmFix)
@@ -831,6 +833,23 @@ func (h *handlers) gitSourceConfigSet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.gs.Status(ctx))
 }
 
+// gitSourceValidate checks a repo URL (+ optional token) and lists its remote branches
+// without cloning. It always responds 200 — an unreachable/auth-failed repo comes back as
+// {valid:false, error:…} so the UI can render the message inline.
+func (h *handlers) gitSourceValidate(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		RepoURL   string `json:"repoUrl"`
+		AuthToken string `json:"authToken"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	writeJSON(w, http.StatusOK, h.gs.ValidateRemote(ctx, in.RepoURL, in.AuthToken))
+}
+
 // gitSourceConnect clones-or-fetches the repo and re-points the source root at it.
 func (h *handlers) gitSourceConnect(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
@@ -840,6 +859,27 @@ func (h *handlers) gitSourceConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, h.gs.Status(ctx))
+}
+
+// gitSourceConnectStream is the streaming variant of connect: it emits clone/checkout
+// progress steps over SSE and ends with the resolved status, so the UI can show a live
+// timeline during the (possibly slow) clone.
+func (h *handlers) gitSourceConnectStream(w http.ResponseWriter, r *http.Request) {
+	sse, ok := newSSE(w)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	stopHeartbeat := startHeartbeat(ctx, sse)
+	defer stopHeartbeat()
+
+	if _, err := h.gs.Connect(ctx, func(s api.Step) { sse.step(s) }); err != nil {
+		sse.event("error", map[string]string{"error": err.Error()})
+		return
+	}
+	sse.event("result", h.gs.Status(ctx))
 }
 
 // gitSourceBranch creates a problem's fix branch on demand (when branch-per-fix is on).

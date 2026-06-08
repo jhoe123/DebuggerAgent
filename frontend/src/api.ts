@@ -10,6 +10,7 @@ import type {
   ConfirmFixResult,
   GitSourceConfig,
   GitSourceStatus,
+  GitValidateResult,
   HistoryEntry,
   HistoryResponse,
   InstrumentationScan,
@@ -64,6 +65,14 @@ export async function listProblems(): Promise<Problem[]> {
     usedMock = true;
     return mockProblems;
   }
+}
+
+// fetchProblems is the strict variant used by the polling layer: it normalizes a null
+// payload to [] and THROWS on any transport/HTTP error (no silent mock swap). Callers
+// decide how to handle failures (the AppData poll keeps the last-good list).
+export async function fetchProblems(): Promise<Problem[]> {
+  const p = await real<Problem[] | null>("/api/problems");
+  return p ?? [];
 }
 
 export async function investigate(problemId: string): Promise<Investigation> {
@@ -257,10 +266,27 @@ export async function setGitSourceConfig(config: GitSourceConfig): Promise<GitSo
     body: JSON.stringify(config),
   });
 }
+// validateGitSource checks a repo URL (+ optional token) and lists its remote branches
+// WITHOUT cloning. Always resolves: an unreachable repo comes back as {valid:false, error}.
+export async function validateGitSource(repoUrl: string, authToken?: string): Promise<GitValidateResult> {
+  return real<GitValidateResult>("/api/git-source/validate", {
+    method: "POST",
+    body: JSON.stringify({ repoUrl, authToken: authToken ?? "" }),
+  });
+}
 // connectGitSource clones-or-fetches the repo and re-points the source root at it.
 // May take a while (clone), so callers should show a busy state.
 export async function connectGitSource(): Promise<GitSourceStatus> {
   return real<GitSourceStatus>("/api/git-source/connect", { method: "POST" });
+}
+// connectGitSourceStream is the streaming variant: it streams clone/checkout steps and
+// resolves with the final status. Falls back to the non-streaming connect on failure.
+export async function connectGitSourceStream(onStep: (s: Step) => void): Promise<GitSourceStatus> {
+  try {
+    return await consumeSSE<GitSourceStatus>("/api/git-source/connect/stream", {}, onStep);
+  } catch {
+    return connectGitSource();
+  }
 }
 // confirmFix merges a problem's fix branch into the working branch and deletes it.
 // The backend updates the durable artifact (overall=confirmed) so it survives refresh.

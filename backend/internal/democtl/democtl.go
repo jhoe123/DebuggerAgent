@@ -359,6 +359,15 @@ func (c *Controller) applyPatchSet(list []tools.PatchProposal) error {
 	return nil
 }
 
+// ApplyPatches writes each patch's full content to the demo_app source WITHOUT
+// running the pipeline. The autopilot uses this to apply a batch's fixes one at a
+// time so each subsequent investigation reads the cumulatively-patched source
+// (the two seeded bugs share demo_app/main.go, so later full-file patches must be
+// generated on top of earlier ones, not against the clean original).
+func (c *Controller) ApplyPatches(list []tools.PatchProposal) error {
+	return c.applyPatchSet(list)
+}
+
 // ApplyPatch writes the pending (single) patch's full content to the demo_app source.
 func (c *Controller) ApplyPatch() error {
 	prop := c.patches.Latest()
@@ -770,13 +779,37 @@ func (c *Controller) runCmds(ctx context.Context, cmds []lang.Command) (bool, st
 		cmd := exec.CommandContext(ctx, cm.Name, cm.Args...)
 		cmd.Dir = c.demoDir
 		b, err := cmd.CombinedOutput()
-		sb.Write(b)
+		out := string(b)
+		sb.WriteString(out)
 		if err != nil {
+			// On Windows, `go test`/`go build` can exit non-zero solely because it
+			// couldn't delete its just-built binary ("unlinkat ...: being used by
+			// another process" — typically antivirus still scanning the fresh .exe),
+			// even though every test passed. Don't false-fail the deploy gate on that
+			// cleanup race when the run otherwise shows no real failure.
+			if isCleanupOnlyFailure(out) {
+				continue
+			}
 			fmt.Fprintf(&sb, "\n%s %s: %v\n", cm.Name, strings.Join(cm.Args, " "), err)
 			return false, sb.String()
 		}
 	}
 	return true, sb.String()
+}
+
+// isCleanupOnlyFailure reports whether a non-zero `go` exit is only the Windows
+// post-build binary-cleanup race (output contains the "being used by another
+// process" unlink warning) with no genuine compile/test failure in the output.
+func isCleanupOnlyFailure(out string) bool {
+	if !strings.Contains(out, "being used by another process") {
+		return false
+	}
+	for _, marker := range []string{"FAIL", "--- FAIL", "build failed", "[build failed]", "panic:", "cannot find", "undefined:", "syntax error"} {
+		if strings.Contains(out, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Controller) git(ctx context.Context, args ...string) (string, error) {

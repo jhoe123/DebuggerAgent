@@ -30,6 +30,7 @@ type Config struct {
 	CommitAuthorName   string
 	CommitAuthorEmail  string
 	CloneDir           string
+	BaseBranch         string // transient: base for creating a NEW working branch (consulted only at first checkout)
 }
 
 // Store is a thread-safe holder for the Git source Config.
@@ -90,6 +91,9 @@ func (st *Store) Set(in api.GitSourceConfig) Config {
 	if v := strings.TrimSpace(in.CloneDir); v != "" {
 		st.c.CloneDir = v
 	}
+	// BaseBranch is a transient hint for creating a new working branch; take it as-is
+	// (including blank) so the UI can clear it once the working branch exists.
+	st.c.BaseBranch = strings.TrimSpace(in.BaseBranch)
 	st.c.BranchPerFix = in.BranchPerFix
 	st.c.AutoMergeOnConfirm = in.AutoMergeOnConfirm
 	st.c.PushEnabled = in.PushEnabled

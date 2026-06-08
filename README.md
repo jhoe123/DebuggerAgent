@@ -107,9 +107,11 @@ A **Test Console** (clearly labeled "testing only") lets you trigger the inciden
 source to its committed buggy state (`git checkout`), and see status — for repeatable demos.
 
 These controls are **gated by `ENABLE_TEST_CONSOLE`, which defaults ON locally** so the full app
-works out of the box. The backend OWNS demo_app (git-resets, builds, runs, restarts it) when on, so
-the **hosted Cloud Run image explicitly pins `ENABLE_TEST_CONSOLE=false`** (see Dockerfile) — the
-public demo stays human-gated. Set `ENABLE_TEST_CONSOLE=false` to disable locally too.
+works out of the box. The backend OWNS demo_app (git-resets, builds, runs, restarts it) when on. The
+**hosted Cloud Run image keeps `ENABLE_TEST_CONSOLE=true`** (see Dockerfile) so the public URL can run
+the full live auto-patch demo (apply→test→build→deploy→verify) — anyone with the URL can trigger
+writes/deploys against the ephemeral demo_app, so keep it for demos. Set `ENABLE_TEST_CONSOLE=false`
+to make any deployment human-gated (investigate + propose only).
 
 ```bash
 # Test Console is on by default — just run:

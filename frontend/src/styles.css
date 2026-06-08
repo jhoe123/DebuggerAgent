@@ -89,6 +89,10 @@ body {
 /* problem-list management: header, filters, selection, dismiss/restore */
 .problems-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.6rem; }
 .problems-head h2 { margin: 0; }
+.problems-head-actions { display: flex; align-items: center; gap: 0.4rem; }
+.problems-updated { font-size: 0.72rem; white-space: nowrap; }
+.refresh-btn { display: inline-flex; align-items: center; gap: 0.3rem; }
+.refresh-btn .ap-spin { display: inline-block; }
 .hidden-toggle.active { border-color: var(--accent); color: var(--accent); }
 .ghost-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -431,6 +435,16 @@ code { background: var(--panel-2); padding: 0.1rem 0.35rem; border-radius: 4px; 
 
 .switch-row { display: flex; align-items: center; gap: 0.6rem; font-size: 0.92rem; }
 .autonomy-label { margin: 0.8rem 0 0.4rem; font-size: 0.82rem; }
+
+/* Git source setup */
+.git-stack { display: flex; flex-direction: column; gap: 0.7rem; }
+.git-hint { font-size: 0.85rem; color: var(--muted); margin: 0 0 0.8rem; line-height: 1.45; }
+.git-status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.8rem; }
+.git-toggles { display: flex; flex-direction: column; gap: 0.7rem; }
+.git-toggles .switch-row span { line-height: 1.35; }
+.git-disclosure { display: inline-flex; align-items: center; gap: 0.4rem; background: transparent; border: none; color: var(--text); font-size: 1rem; font-weight: 600; cursor: pointer; padding: 0; }
+.git-disclosure:hover { color: var(--accent); }
+.git-divider { border: none; border-top: 1px solid var(--border); margin: 0.9rem 0; }
 
 /* Settings tabs */
 .settings-tabs { display: flex; gap: 0.15rem; border-bottom: 1px solid var(--border); margin-bottom: 1.25rem; flex-wrap: wrap; }

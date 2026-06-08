@@ -12,11 +12,13 @@ export function InvestigationPanel({
   onApproved,
   onReinvestigate,
   reinvestigating = false,
+  autoActive = false,
 }: {
   data: Investigation;
   onApproved?: () => void;
   onReinvestigate?: () => void;
   reinvestigating?: boolean;
+  autoActive?: boolean;
 }) {
   const { rootCause, confidence, alternatives, proposedPatch, suggestedTest } = data;
   const { staged, refreshPatches, refreshArtifacts, artifactMap } = useAppData();
@@ -152,7 +154,7 @@ export function InvestigationPanel({
           </span>
         ) : canConfirm ? (
           <div className="confirm-fix">
-            <button className="approve-btn" onClick={onConfirm} disabled={busy || reinvestigating}>
+            <button className="approve-btn" onClick={onConfirm} disabled={busy || reinvestigating || autoActive}>
               {busy ? "Merging…" : "Confirm fixed — merge & clean up branch"}
             </button>
             <p className="muted">
@@ -162,12 +164,12 @@ export function InvestigationPanel({
         ) : isStaged ? (
           <span className="approved">
             ✓ Staged — in the deployment batch.{" "}
-            <button className="link-btn" onClick={onUnstage} disabled={busy || reinvestigating}>
+            <button className="link-btn" onClick={onUnstage} disabled={busy || reinvestigating || autoActive}>
               Remove from batch
             </button>
           </span>
         ) : (
-          <button className="approve-btn" onClick={onStage} disabled={busy || reinvestigating}>
+          <button className="approve-btn" onClick={onStage} disabled={busy || reinvestigating || autoActive}>
             {busy ? "Adding…" : "Add to batch"}
           </button>
         )}
@@ -175,7 +177,7 @@ export function InvestigationPanel({
           <button
             className="ghost-btn"
             onClick={onReinvestigate}
-            disabled={busy || reinvestigating}
+            disabled={busy || reinvestigating || autoActive}
             title="Re-run the agent to refresh the root cause and proposed fix (re-records the proposal so it can be staged)"
           >
             {reinvestigating ? "Re-investigating…" : "Re-investigate"}

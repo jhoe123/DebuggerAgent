@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import type { Investigation, Step } from "../types";
 import { confirmFix, investigateStream, stagePatch, unstagePatch } from "../api";
 import { useAppData } from "../context/AppDataContext";
+import { agoLabel } from "../hooks/usePolling";
 import { useAutopilot, isActivePhase } from "../context/AutopilotContext";
 import { useToast } from "../context/ToastContext";
 import { useLocalStore } from "../context/LocalStoreContext";
@@ -11,7 +12,6 @@ import { InvestigationPanel } from "../components/Investigation";
 import { AgentSteps } from "../components/AgentSteps";
 import { BatchPanel } from "../components/BatchPanel";
 import { StageTracker } from "../components/StageTracker";
-import { TestConsole } from "../components/TestConsole";
 import { Skeleton, EmptyState, ErrorState } from "../components/States";
 
 type SortBy = "recent" | "severity" | "impact";
@@ -31,10 +31,9 @@ export function ProblemsPage() {
     problems,
     problemsLoading,
     problemsError,
+    problemsUpdatedAt,
     refreshProblems,
-    consoleAvailable,
     reloadHistory,
-    refreshTestStatus,
     setStreaming,
     artifactMap,
     staged,
@@ -59,6 +58,28 @@ export function ProblemsPage() {
   const [steps, setSteps] = useState<Step[]>([]);
   const [investigating, setInvestigating] = useState(false);
   const [mergeBusy, setMergeBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  async function handleCancel(problemId: string) {
+    try {
+      await cancel(problemId);
+      await refreshProblems();
+      await refreshPatches();
+      await refreshArtifacts();
+      reloadHistory();
+    } catch (e) {
+      toast.error(`Halt failed: ${String(e)}`);
+    }
+  }
+
+  async function onRefresh() {
+    setRefreshing(true);
+    try {
+      await refreshProblems();
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   // List management state.
   const [query, setQuery] = useState("");
@@ -105,13 +126,13 @@ export function ProblemsPage() {
       if (q && !`${p.title} ${p.entity} ${p.id}`.toLowerCase().includes(q)) return false;
       return true;
     });
+    // Array.sort is stable, so returning 0 preserves the incoming order. The list arrives
+    // already stabilized (newest-appeared first) from AppDataContext, so "recent" — and any
+    // tie under "severity" — keep that order instead of reshuffling on the live startedAt.
     return [...list].sort((a, b) => {
       if (sortBy === "impact") return (b.affectedUsers ?? 0) - (a.affectedUsers ?? 0);
-      if (sortBy === "severity") {
-        const r = (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9);
-        if (r !== 0) return r;
-      }
-      return new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime();
+      if (sortBy === "severity") return (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9);
+      return 0;
     });
   }, [activeProblems, query, severityFilter, kindFilter, sortBy]);
 
@@ -220,25 +241,40 @@ export function ProblemsPage() {
       {/* Consolidated patches + one-click deploy (collapsed bar; hidden until staged). */}
       <BatchPanel />
 
-      {consoleAvailable && <TestConsole onChange={refreshTestStatus} />}
-
       <div className="layout">
         <div className="problems-col">
           <aside className="problems">
             <div className="problems-head">
-              <h2>Dynatrace problems</h2>
               {!problemsLoading && !listError && (
-                <button
-                  className={`ghost-btn hidden-toggle${showHidden ? " active" : ""}`}
-                  onClick={() => {
-                    setShowHidden((s) => !s);
-                    setSelected(new Set());
-                  }}
-                  disabled={!showHidden && hiddenProblems.length === 0}
-                  title="Show dismissed problems"
-                >
-                  {showHidden ? "← Active" : `Hidden (${hiddenProblems.length})`}
-                </button>
+                <div className="problems-head-actions">
+                  {problemsUpdatedAt && (
+                    <span className="muted problems-updated" title="Last updated">
+                      updated {agoLabel(problemsUpdatedAt)}
+                    </span>
+                  )}
+                  <button
+                    className="ghost-btn refresh-btn"
+                    onClick={onRefresh}
+                    disabled={refreshing}
+                    title="Refresh the problem list now"
+                  >
+                    <span className={refreshing ? "ap-spin" : ""} aria-hidden>
+                      ⟳
+                    </span>{" "}
+                    Refresh
+                  </button>
+                  <button
+                    className={`ghost-btn hidden-toggle${showHidden ? " active" : ""}`}
+                    onClick={() => {
+                      setShowHidden((s) => !s);
+                      setSelected(new Set());
+                    }}
+                    disabled={!showHidden && hiddenProblems.length === 0}
+                    title="Show dismissed problems"
+                  >
+                    {showHidden ? "← Active" : `Hidden (${hiddenProblems.length})`}
+                  </button>
+                </div>
               )}
             </div>
 
@@ -285,6 +321,8 @@ export function ProblemsPage() {
                     onToggleSelect={toggleSelect}
                     onDismiss={(pid) => handleDismiss([pid])}
                     onRestore={(pid) => handleRestore([pid])}
+                    investigating={investigating}
+                    onCancel={handleCancel}
                   />
                 </>
               )
@@ -390,6 +428,8 @@ export function ProblemsPage() {
                     onToggleSelect={toggleSelect}
                     onDismiss={(pid) => handleDismiss([pid])}
                     onRestore={(pid) => handleRestore([pid])}
+                    investigating={investigating}
+                    onCancel={handleCancel}
                   />
                 )}
               </>
@@ -405,17 +445,28 @@ export function ProblemsPage() {
             />
           )}
 
-          {selectedId && !selectedProblem && problems.length > 0 && (
-            <EmptyState
-              title="Unknown problem"
-              message={`No problem matches "${selectedId}".`}
-              action={
-                <button className="ghost-btn" onClick={() => navigate("/problems")}>
-                  Back to list
-                </button>
-              }
-            />
+          {/* Still resolving the list for a deep-linked id — don't flash "Unknown problem". */}
+          {selectedId && !selectedProblem && !artifactMap[selectedId] && !result && problemsLoading && (
+            <Skeleton count={2} />
           )}
+
+          {/* Genuinely not in a loaded, non-empty list and nothing cached to show for it. */}
+          {selectedId &&
+            !selectedProblem &&
+            !artifactMap[selectedId] &&
+            !result &&
+            !problemsLoading &&
+            problems.length > 0 && (
+              <EmptyState
+                title="Unknown problem"
+                message={`No problem matches "${selectedId}".`}
+                action={
+                  <button className="ghost-btn" onClick={() => navigate("/problems")}>
+                    Back to list
+                  </button>
+                }
+              />
+            )}
 
           {selectedId && artifactMap[selectedId] && (
             <StageTracker
@@ -426,7 +477,7 @@ export function ProblemsPage() {
                 !!gitSource?.workingBranch
               }
               onMerge={handleMerge}
-              merging={mergeBusy}
+              merging={mergeBusy || autoActive || investigating}
               demoAppUrl={demoAppUrl}
               demoAppName={demoAppName}
             />
@@ -439,7 +490,7 @@ export function ProblemsPage() {
                   Autopilot {autoActive ? "is handling this" : run.phase === "halted" ? "halted" : "result"}
                 </h3>
                 {autoActive && (
-                  <button className="halt-btn" onClick={() => selectedId && cancel(selectedId)}>
+                  <button className="halt-btn" onClick={() => selectedId && handleCancel(selectedId)}>
                     Halt &amp; take over
                   </button>
                 )}
@@ -449,7 +500,7 @@ export function ProblemsPage() {
             </section>
           )}
 
-          {selectedId && (selectedProblem || problems.length === 0) && !result && !autoActive && (
+          {selectedId && selectedProblem && !result && !autoActive && (
             <div className="investigate-cta">
               <p>
                 {run
@@ -473,6 +524,7 @@ export function ProblemsPage() {
               onApproved={reloadHistory}
               onReinvestigate={onInvestigate}
               reinvestigating={investigating}
+              autoActive={autoActive}
             />
           )}
         </main>

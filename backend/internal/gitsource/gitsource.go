@@ -69,6 +69,39 @@ func (m *Manager) Config() Config { return m.store.Get() }
 // SetConfig merges a config update (an empty token preserves the stored secret).
 func (m *Manager) SetConfig(in api.GitSourceConfig) { m.store.Set(in) }
 
+// ValidateRemote checks that a repo URL (with an optional token) is reachable and lists
+// its remote branches — without cloning. It runs `git ls-remote --symref <url>` with the
+// token injected as an HTTPS auth header (never in the URL or logs). A blank token falls
+// back to the stored secret so a saved private repo can be re-validated. It needs only the
+// git binary (not ENABLE_GIT_SOURCE) since it neither clones nor mutates anything.
+func (m *Manager) ValidateRemote(ctx context.Context, repoURL, token string) api.GitValidateResult {
+	res := api.GitValidateResult{Branches: []string{}}
+	if !m.gitOK {
+		res.Error = "git is not installed on this host"
+		return res
+	}
+	repoURL = strings.TrimSpace(repoURL)
+	if repoURL == "" {
+		res.Error = "enter a repository URL"
+		return res
+	}
+	if strings.TrimSpace(token) == "" {
+		token = m.store.Get().AuthToken // re-validate a saved private repo with the stored PAT
+	}
+	args := append(authHeaderArgs(token), "ls-remote", "--symref", repoURL)
+	cmd := exec.CommandContext(ctx, "git", args...)
+	// Fail fast instead of blocking on an interactive credential prompt for a private repo.
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		res.Error = sanitizeGitError(string(out), err)
+		return res
+	}
+	res.Branches, res.DefaultBranch = parseLsRemote(string(out))
+	res.Valid = true
+	return res
+}
+
 // Connect clones the repo (or fetches if already cloned), checks out the working
 // branch, and re-points the active source root at the clone. emit (optional) receives
 // progress steps. Returns the resolved clone dir.
@@ -111,7 +144,7 @@ func (m *Manager) Connect(ctx context.Context, emit func(api.Step)) (string, err
 		step(api.Step{Stage: "clone", Status: "ok", Message: "Cloned into working directory"})
 	}
 
-	if err := m.ensureWorkingBranch(ctx, dir, cfg.WorkingBranch); err != nil {
+	if err := m.ensureWorkingBranch(ctx, dir, cfg.WorkingBranch, cfg.BaseBranch); err != nil {
 		m.connected = false
 		m.lastErr = err.Error()
 		step(api.Step{Stage: "checkout", Status: "fail", Message: err.Error()})
@@ -390,8 +423,10 @@ func (m *Manager) failConnect(step func(api.Step), stage, out string, err error)
 }
 
 // ensureWorkingBranch checks out the working branch, creating/tracking it as needed,
-// then best-effort fast-forwards to origin. Caller holds m.mu.
-func (m *Manager) ensureWorkingBranch(ctx context.Context, dir, branch string) error {
+// then best-effort fast-forwards to origin. When the branch doesn't yet exist (locally or
+// on origin) and a non-empty base is given, it is created off origin/<base> — this is how
+// "create a new working branch from a base" is realized at first connect. Caller holds m.mu.
+func (m *Manager) ensureWorkingBranch(ctx context.Context, dir, branch, base string) error {
 	switch {
 	case verifyRef(ctx, m, dir, "refs/heads/"+branch):
 		if out, err := m.runGit(ctx, dir, false, "checkout", branch); err != nil {
@@ -400,6 +435,10 @@ func (m *Manager) ensureWorkingBranch(ctx context.Context, dir, branch string) e
 	case verifyRef(ctx, m, dir, "refs/remotes/origin/"+branch):
 		if out, err := m.runGit(ctx, dir, false, "checkout", "-b", branch, "origin/"+branch); err != nil {
 			return fmt.Errorf("checkout %s: %s", branch, strings.TrimSpace(out))
+		}
+	case base != "" && verifyRef(ctx, m, dir, "refs/remotes/origin/"+base):
+		if out, err := m.runGit(ctx, dir, false, "checkout", "-b", branch, "origin/"+base); err != nil {
+			return fmt.Errorf("create %s from %s: %s", branch, base, strings.TrimSpace(out))
 		}
 	default:
 		if out, err := m.runGit(ctx, dir, false, "checkout", "-b", branch); err != nil {
@@ -459,11 +498,9 @@ func (m *Manager) branchName(problemID string) string {
 // so the token is used without being written to .git/config or the URL. The token is
 // never included in returned output or error messages.
 func (m *Manager) runGit(ctx context.Context, dir string, withToken bool, args ...string) (string, error) {
-	cfg := m.store.Get()
 	var full []string
-	if withToken && cfg.AuthToken != "" {
-		auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + cfg.AuthToken))
-		full = append(full, "-c", "http.extraHeader=Authorization: Basic "+auth)
+	if withToken {
+		full = append(full, authHeaderArgs(m.store.Get().AuthToken)...)
 	}
 	if dir != "" {
 		full = append(full, "-C", dir)
@@ -476,6 +513,18 @@ func (m *Manager) runGit(ctx context.Context, dir string, withToken bool, args .
 		return out, fmt.Errorf("git %s failed: %w", strings.Join(args, " "), err)
 	}
 	return out, nil
+}
+
+// authHeaderArgs returns the `-c http.extraHeader=…` git args that inject an HTTPS
+// Authorization header for a single invocation (so the token is never written to
+// .git/config or the URL). Returns nil for a blank token.
+func authHeaderArgs(token string) []string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil
+	}
+	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	return []string{"-c", "http.extraHeader=Authorization: Basic " + auth}
 }
 
 // verifyRef reports whether a ref exists in the clone.
@@ -512,6 +561,60 @@ func maskRepoURL(u string) string {
 		return scheme + rest
 	}
 	return u
+}
+
+// parseLsRemote parses `git ls-remote --symref <url>` output into the sorted, de-duped
+// list of branch names (refs/heads/*) and the default branch (HEAD's symref target).
+func parseLsRemote(out string) (branches []string, defaultBranch string) {
+	const headsPrefix = "refs/heads/"
+	seen := map[string]bool{}
+	for _, ln := range strings.Split(out, "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		// Symref line: "ref: refs/heads/main\tHEAD"
+		if rest, ok := strings.CutPrefix(ln, "ref: "); ok {
+			fields := strings.Fields(rest)
+			if len(fields) == 2 && fields[1] == "HEAD" {
+				defaultBranch = strings.TrimPrefix(fields[0], headsPrefix)
+			}
+			continue
+		}
+		// Ref line: "<sha>\trefs/heads/<name>" (also tags/HEAD, which we skip).
+		fields := strings.Fields(ln)
+		if len(fields) != 2 {
+			continue
+		}
+		if name, ok := strings.CutPrefix(fields[1], headsPrefix); ok && name != "" && !seen[name] {
+			seen[name] = true
+			branches = append(branches, name)
+		}
+	}
+	sort.Strings(branches)
+	return branches, defaultBranch
+}
+
+// sanitizeGitError condenses git's failure output into one user-facing line. The token is
+// never in the URL or output (it rides in an HTTPS header), so this is safe to surface.
+func sanitizeGitError(out string, err error) string {
+	var best string
+	for _, ln := range strings.Split(out, "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		if strings.HasPrefix(ln, "fatal:") || strings.HasPrefix(ln, "error:") || strings.HasPrefix(ln, "remote:") {
+			return strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(ln, "fatal:"), "error:"), "remote:"))
+		}
+		if best == "" {
+			best = ln
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return err.Error()
 }
 
 // slugify makes a problemId safe as a git branch component: only [A-Za-z0-9_-], with

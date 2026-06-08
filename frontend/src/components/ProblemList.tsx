@@ -49,6 +49,8 @@ export function ProblemList({
   onToggleSelect,
   onDismiss,
   onRestore,
+  investigating = false,
+  onCancel,
 }: {
   problems: Problem[];
   selectedId: string | null;
@@ -63,6 +65,8 @@ export function ProblemList({
   onToggleSelect: (id: string) => void;
   onDismiss: (id: string) => void;
   onRestore: (id: string) => void;
+  investigating?: boolean;
+  onCancel?: (id: string) => void;
 }) {
   const { runs, cancel } = useAutopilot();
   return (
@@ -75,6 +79,9 @@ export function ProblemList({
         const chip = art ? OVERALL_CHIP[art.overall] : null;
         const inBatch = stagedIds.has(p.id);
         const batchDisabled = !inBatch && !canStage(p.id); // can't stage an un-investigated problem
+        const autoActive = run ? isActivePhase(run.phase) : false;
+        const isCurrentManual = p.id === selectedId && investigating;
+        const isCurrentlyBusy = autoActive || isCurrentManual;
         return (
           <div
             key={p.id}
@@ -90,18 +97,20 @@ export function ProblemList({
                   type="checkbox"
                   className="problem-check"
                   checked={selectMode ? selected.has(p.id) : inBatch}
-                  disabled={selectMode ? false : batchDisabled}
+                  disabled={selectMode ? false : (batchDisabled || isCurrentlyBusy)}
                   onClick={(e) => e.stopPropagation()}
                   onChange={() => (selectMode ? onToggleSelect(p.id) : onToggleBatch(p.id))}
                   aria-label={selectMode ? `Select ${p.title}` : `Add ${p.title} to deployment batch`}
                   title={
                     selectMode
                       ? "Select to dismiss"
-                      : batchDisabled
-                        ? "Investigate first to add to batch"
-                        : inBatch
-                          ? "In deployment batch — click to remove"
-                          : "Add to deployment batch"
+                      : isCurrentlyBusy
+                        ? "Cannot modify batch while investigating or auto-patching"
+                        : batchDisabled
+                          ? "Investigate first to add to batch"
+                          : inBatch
+                            ? "In deployment batch — click to remove"
+                            : "Add to deployment batch"
                   }
                 />
               )}
@@ -150,7 +159,8 @@ export function ProblemList({
                     title="Halt automation and take over manually"
                     onClick={(e) => {
                       e.stopPropagation();
-                      cancel(p.id);
+                      if (onCancel) onCancel(p.id);
+                      else cancel(p.id);
                     }}
                   >
                     Halt

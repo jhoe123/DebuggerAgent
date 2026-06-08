@@ -4,7 +4,7 @@ import { useAppData } from "../context/AppDataContext";
 import { useAutopilot } from "../context/AutopilotContext";
 import { useToast } from "../context/ToastContext";
 import {
-  connectGitSource,
+  connectGitSourceStream,
   getGitSource,
   getPipelineConfig,
   getSlack,
@@ -12,6 +12,7 @@ import {
   setPipelineConfig,
   setSlackConfig,
   testSlack,
+  validateGitSource,
 } from "../api";
 import type {
   BuildStrategy,
@@ -20,8 +21,10 @@ import type {
   GitSourceStatus,
   PipelineSettings,
   SlackStatus,
+  Step,
   TestStrategy,
 } from "../types";
+import { AgentSteps } from "../components/AgentSteps";
 
 const THEMES: ThemeMode[] = ["light", "dark", "system"];
 const STAGES = ["apply", "test", "build", "deploy"] as const;
@@ -34,6 +37,15 @@ const TABS: { key: TabKey; label: string; icon: string }[] = [
   { key: "git", label: "Git source", icon: "⎇" },
   { key: "notifications", label: "Notifications", icon: "✉" },
 ];
+
+// Result of probing a repo URL (ls-remote) before cloning: drives the branch chooser.
+type GitValidation = {
+  status: "idle" | "validating" | "valid" | "invalid";
+  branches: string[];
+  defaultBranch: string;
+  error: string;
+};
+const GIT_VAL_IDLE: GitValidation = { status: "idle", branches: [], defaultBranch: "", error: "" };
 
 // Maps the GET status (non-secret) back into the editable config form. The token
 // is left blank — an empty token tells the backend to keep the existing secret.
@@ -103,6 +115,11 @@ export function SettingsPage() {
   const [gitForm, setGitForm] = useState<GitSourceConfig | null>(null);
   const [gitTok, setGitTok] = useState("");
   const [gitBusy, setGitBusy] = useState(false);
+  const [gitVal, setGitVal] = useState<GitValidation>(GIT_VAL_IDLE);
+  const [branchMode, setBranchMode] = useState<"existing" | "new">("existing");
+  const [gitSteps, setGitSteps] = useState<Step[]>([]);
+  const [gitError, setGitError] = useState("");
+  const [showAdv, setShowAdv] = useState(false);
 
   useEffect(() => {
     getSlack()
@@ -166,30 +183,76 @@ export function SettingsPage() {
     }
   }
 
-  async function saveGit() {
+  // Editing the URL or token invalidates any prior validation (its branch list is stale).
+  function resetGitValidation() {
+    setGitVal((v) => (v.status === "idle" ? v : GIT_VAL_IDLE));
+  }
+
+  // Step 1: probe the repo (ls-remote) without cloning, to confirm reachability and list
+  // the remote branches the branch chooser offers.
+  async function runValidate() {
     if (!gitForm) return;
-    setGitBusy(true);
+    const repoUrl = gitForm.repoUrl.trim();
+    if (!repoUrl) {
+      setGitVal({ ...GIT_VAL_IDLE, status: "invalid", error: "Enter a repository URL." });
+      return;
+    }
+    setGitVal({ ...GIT_VAL_IDLE, status: "validating" });
     try {
-      const s = await setGitSourceConfig({ ...gitForm, authToken: gitTok.trim() || undefined });
-      setGit(s);
-      setGitForm(statusToConfig(s));
-      if (gitTok) setGitTok("");
-      toast.success("Git source settings saved");
-    } catch {
-      toast.error("Couldn't save Git source settings");
-    } finally {
-      setGitBusy(false);
+      const res = await validateGitSource(repoUrl, gitTok.trim() || undefined);
+      if (!res.valid) {
+        setGitVal({ ...GIT_VAL_IDLE, status: "invalid", error: res.error || "Repository is not reachable." });
+        return;
+      }
+      const branches = res.branches ?? [];
+      const def = res.defaultBranch || branches[0] || "";
+      setGitVal({ status: "valid", branches, defaultBranch: def, error: "" });
+      setBranchMode("existing");
+      // Seed the working branch: keep the current one if it's a known remote branch, else
+      // fall back to the repo's default branch.
+      setGitForm((f) => {
+        if (!f) return f;
+        const keep = !!f.workingBranch && branches.includes(f.workingBranch);
+        return { ...f, workingBranch: keep ? f.workingBranch : def, baseBranch: "" };
+      });
+    } catch (e) {
+      setGitVal({ ...GIT_VAL_IDLE, status: "invalid", error: String(e) });
     }
   }
-  async function connectGit() {
+
+  // Step 2: persist the config, then (when writes are enabled) clone/fetch with a live
+  // step timeline. Surfaces validation/clone issues inline.
+  async function applyGit() {
+    if (!gitForm) return;
     setGitBusy(true);
+    setGitError("");
+    setGitSteps([]);
     try {
-      const s = await connectGitSource();
-      setGit(s);
-      setGitForm(statusToConfig(s));
-      toast.success(s.connected ? `Connected to ${s.repoUrlPreview ?? "repository"}` : "Connect attempted — check status");
+      const saved = await setGitSourceConfig({ ...gitForm, authToken: gitTok.trim() || undefined });
+      setGit(saved);
+      if (gitTok) setGitTok("");
+      if (!saved.enabled) {
+        setGitForm(statusToConfig(saved));
+        toast.success("Git source settings saved — set ENABLE_GIT_SOURCE=true to clone.");
+        return;
+      }
+      const final = await connectGitSourceStream((s) => setGitSteps((prev) => [...prev, s]));
+      setGit(final);
+      setGitForm(statusToConfig(final));
+      if (final.lastError) {
+        setGitError(final.lastError);
+        toast.error(`Connected with issues: ${final.lastError}`);
+      } else {
+        setGitVal(GIT_VAL_IDLE); // collapse the chooser; the Connection card shows the truth
+        toast.success(
+          final.connected
+            ? `Connected to ${final.repoUrlPreview ?? "repository"} on ${final.currentBranch ?? final.workingBranch}`
+            : "Applied — check status",
+        );
+      }
     } catch (e) {
-      toast.error(`Connect failed: ${String(e)}`);
+      setGitError(String(e));
+      toast.error(`Apply failed: ${String(e)}`);
     } finally {
       setGitBusy(false);
     }
@@ -446,141 +509,296 @@ export function SettingsPage() {
         <div className="settings-panel">
           {gitForm ? (
             <>
+              {/* Step 1 — Repository: paste the URL (+ optional token) and validate. */}
               <section className="settings-card">
-                <h3>
-                  Git source{" "}
-                  <span className="mini-chip">{git?.enabled ? "writes enabled" : "read-only"}</span>
-                </h3>
-                <p className="muted">
-                  Point PatchPilot at a Git repository it manages fixes in: it can branch per fix, push,
-                  and merge into the working branch on confirm. The auth token is a secret and is never
-                  returned by the API.
+                <h3>Repository</h3>
+                <p className="git-hint">
+                  The Git repo PatchPilot clones and manages fixes in. Paste the HTTPS URL — add a
+                  personal access token for a private repo — then validate. The token is a secret and is
+                  never returned by the API.
                 </p>
-                <div className="pipe-grid">
+                <div className="git-stack">
                   <label className="pipe-field">
                     <span>Repository URL</span>
                     <input
                       value={gitForm.repoUrl}
                       disabled={gitBusy}
                       placeholder="https://github.com/you/repo.git"
-                      onChange={(e) => setGitForm({ ...gitForm, repoUrl: e.target.value })}
+                      onChange={(e) => {
+                        setGitForm({ ...gitForm, repoUrl: e.target.value });
+                        resetGitValidation();
+                      }}
                     />
                   </label>
                   <label className="pipe-field">
-                    <span>Working branch</span>
+                    <span>
+                      Access token <span className="muted">— optional, for private repos</span>
+                    </span>
                     <input
-                      value={gitForm.workingBranch}
+                      type="password"
+                      value={gitTok}
+                      placeholder={git?.tokenConfigured ? "Replace saved token…" : "ghp_… / glpat-…"}
                       disabled={gitBusy}
-                      placeholder="patchpilot"
-                      onChange={(e) => setGitForm({ ...gitForm, workingBranch: e.target.value })}
-                    />
-                  </label>
-                  <label className="pipe-field">
-                    <span>Fix branch prefix</span>
-                    <input
-                      value={gitForm.branchPrefix}
-                      disabled={gitBusy}
-                      placeholder="patchpilot/fix-"
-                      onChange={(e) => setGitForm({ ...gitForm, branchPrefix: e.target.value })}
-                    />
-                  </label>
-                  <label className="pipe-field">
-                    <span>Commit author name</span>
-                    <input
-                      value={gitForm.commitAuthorName}
-                      disabled={gitBusy}
-                      placeholder="PatchPilot"
-                      onChange={(e) => setGitForm({ ...gitForm, commitAuthorName: e.target.value })}
-                    />
-                  </label>
-                  <label className="pipe-field">
-                    <span>Commit author email</span>
-                    <input
-                      value={gitForm.commitAuthorEmail}
-                      disabled={gitBusy}
-                      placeholder="bot@example.com"
-                      onChange={(e) => setGitForm({ ...gitForm, commitAuthorEmail: e.target.value })}
+                      onChange={(e) => {
+                        setGitTok(e.target.value);
+                        resetGitValidation();
+                      }}
+                      aria-label="Git auth token"
                     />
                   </label>
                 </div>
-
-                <p className="muted autonomy-label">Auth token (HTTPS personal access token)</p>
-                <div className="qa-input">
-                  <input
-                    type="password"
-                    value={gitTok}
-                    placeholder={git?.tokenConfigured ? "Replace token…" : "ghp_… / glpat-…"}
-                    disabled={gitBusy}
-                    onChange={(e) => setGitTok(e.target.value)}
-                    aria-label="Git auth token"
-                  />
-                </div>
-
-                <label className="switch-row">
-                  <input
-                    type="checkbox"
-                    checked={gitForm.branchPerFix}
-                    disabled={gitBusy}
-                    onChange={() => setGitForm({ ...gitForm, branchPerFix: !gitForm.branchPerFix })}
-                  />
-                  <span>
-                    <strong>Create a branch per fix</strong> is {gitForm.branchPerFix ? "ON" : "off"}
-                  </span>
-                </label>
-                <label className="switch-row">
-                  <input
-                    type="checkbox"
-                    checked={gitForm.pushEnabled}
-                    disabled={gitBusy}
-                    onChange={() => setGitForm({ ...gitForm, pushEnabled: !gitForm.pushEnabled })}
-                  />
-                  <span>
-                    <strong>Push to remote</strong> is {gitForm.pushEnabled ? "ON" : "off"} — needs a token
-                    with write access
-                  </span>
-                </label>
-                <label className="switch-row">
-                  <input
-                    type="checkbox"
-                    checked={gitForm.autoMergeOnConfirm}
-                    disabled={gitBusy}
-                    onChange={() =>
-                      setGitForm({ ...gitForm, autoMergeOnConfirm: !gitForm.autoMergeOnConfirm })
-                    }
-                  />
-                  <span>
-                    <strong>Merge &amp; delete branch on confirm</strong> is{" "}
-                    {gitForm.autoMergeOnConfirm ? "ON" : "off"}
-                  </span>
-                </label>
-
-                <div className="pipe-actions">
-                  <button className="primary-btn" disabled={gitBusy} onClick={saveGit}>
-                    {gitBusy ? "Saving…" : "Save Git source settings"}
-                  </button>
+                <div className="git-status-row">
                   <button
                     className="seg-btn"
-                    disabled={gitBusy || !gitForm.repoUrl.trim() || !git?.enabled}
-                    onClick={connectGit}
-                    title={git?.enabled ? "" : "Set ENABLE_GIT_SOURCE=true on the backend to clone/branch/merge"}
+                    disabled={gitBusy || gitVal.status === "validating" || !gitForm.repoUrl.trim()}
+                    onClick={runValidate}
                   >
-                    {gitBusy ? "Working…" : git?.connected ? "Re-clone / fetch" : "Connect / Clone"}
+                    {gitVal.status === "validating"
+                      ? "Validating…"
+                      : gitVal.status === "valid"
+                        ? "Re-validate"
+                        : "Validate"}
                   </button>
+                  {gitVal.status === "valid" && (
+                    <span className="chip chip-ok">
+                      ✓ reachable · {gitVal.branches.length} branch{gitVal.branches.length === 1 ? "" : "es"}
+                    </span>
+                  )}
+                  {gitVal.status === "invalid" && <span className="chip chip-warn">{gitVal.error}</span>}
+                  {gitVal.status === "idle" && git?.tokenConfigured && (
+                    <span className="chip chip-info">token saved</span>
+                  )}
                 </div>
               </section>
 
+              {/* Step 2 — Working branch: pick an existing branch or create a new one off a base. */}
               <section className="settings-card">
-                <h3>Connection</h3>
-                <p className="muted">Live state of the configured Git source.</p>
-                <div className="tc-status">
+                <h3>Working branch</h3>
+                <p className="git-hint">The branch PatchPilot integrates confirmed fixes into.</p>
+                {gitVal.status === "valid" ? (
+                  <div className="git-stack">
+                    <div className="seg">
+                      <button
+                        type="button"
+                        className={`seg-btn${branchMode === "existing" ? " active" : ""}`}
+                        disabled={gitBusy}
+                        onClick={() => {
+                          setBranchMode("existing");
+                          setGitForm({
+                            ...gitForm,
+                            workingBranch: gitVal.branches.includes(gitForm.workingBranch)
+                              ? gitForm.workingBranch
+                              : gitVal.defaultBranch,
+                            baseBranch: "",
+                          });
+                        }}
+                      >
+                        Use existing
+                      </button>
+                      <button
+                        type="button"
+                        className={`seg-btn${branchMode === "new" ? " active" : ""}`}
+                        disabled={gitBusy}
+                        onClick={() => {
+                          setBranchMode("new");
+                          setGitForm({
+                            ...gitForm,
+                            workingBranch: "",
+                            baseBranch: gitForm.baseBranch || gitVal.defaultBranch,
+                          });
+                        }}
+                      >
+                        Create new
+                      </button>
+                    </div>
+                    {branchMode === "existing" ? (
+                      <label className="pipe-field">
+                        <span>Branch</span>
+                        <select
+                          value={gitForm.workingBranch}
+                          disabled={gitBusy}
+                          onChange={(e) => setGitForm({ ...gitForm, workingBranch: e.target.value, baseBranch: "" })}
+                        >
+                          {gitVal.branches.map((b) => (
+                            <option key={b} value={b}>
+                              {b}
+                              {b === gitVal.defaultBranch ? " (default)" : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : (
+                      <div className="pipe-grid">
+                        <label className="pipe-field">
+                          <span>New branch name</span>
+                          <input
+                            value={gitForm.workingBranch}
+                            disabled={gitBusy}
+                            placeholder="patchpilot"
+                            onChange={(e) => setGitForm({ ...gitForm, workingBranch: e.target.value })}
+                          />
+                        </label>
+                        <label className="pipe-field">
+                          <span>Created from</span>
+                          <select
+                            value={gitForm.baseBranch || gitVal.defaultBranch}
+                            disabled={gitBusy}
+                            onChange={(e) => setGitForm({ ...gitForm, baseBranch: e.target.value })}
+                          >
+                            {gitVal.branches.map((b) => (
+                              <option key={b} value={b}>
+                                {b}
+                                {b === gitVal.defaultBranch ? " (default)" : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="git-hint" style={{ marginBottom: 0 }}>
+                    {gitForm.workingBranch ? (
+                      <>
+                        Currently <strong>{gitForm.workingBranch}</strong>.{" "}
+                      </>
+                    ) : null}
+                    Validate the repository above to choose a branch or create a new one.
+                  </p>
+                )}
+              </section>
+
+              {/* Advanced — commit identity, branch naming, push/merge behavior (collapsed by default). */}
+              <section className="settings-card">
+                <button
+                  type="button"
+                  className="git-disclosure"
+                  aria-expanded={showAdv}
+                  onClick={() => setShowAdv((s) => !s)}
+                >
+                  <span aria-hidden>{showAdv ? "▾" : "▸"}</span> Advanced options
+                </button>
+                {showAdv && (
+                  <>
+                    <hr className="git-divider" />
+                    <div className="git-stack">
+                      <label className="pipe-field">
+                        <span>Fix branch prefix</span>
+                        <input
+                          value={gitForm.branchPrefix}
+                          disabled={gitBusy}
+                          placeholder="patchpilot/fix-"
+                          onChange={(e) => setGitForm({ ...gitForm, branchPrefix: e.target.value })}
+                        />
+                      </label>
+                      <div className="pipe-grid">
+                        <label className="pipe-field">
+                          <span>Commit author name</span>
+                          <input
+                            value={gitForm.commitAuthorName}
+                            disabled={gitBusy}
+                            placeholder="PatchPilot"
+                            onChange={(e) => setGitForm({ ...gitForm, commitAuthorName: e.target.value })}
+                          />
+                        </label>
+                        <label className="pipe-field">
+                          <span>Commit author email</span>
+                          <input
+                            value={gitForm.commitAuthorEmail}
+                            disabled={gitBusy}
+                            placeholder="bot@example.com"
+                            onChange={(e) => setGitForm({ ...gitForm, commitAuthorEmail: e.target.value })}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                    <hr className="git-divider" />
+                    <div className="git-toggles">
+                      <label className="switch-row">
+                        <input
+                          type="checkbox"
+                          checked={gitForm.branchPerFix}
+                          disabled={gitBusy}
+                          onChange={() => setGitForm({ ...gitForm, branchPerFix: !gitForm.branchPerFix })}
+                        />
+                        <span>
+                          <strong>Branch per fix</strong>{" "}
+                          <span className="muted">— isolate each fix on its own branch</span>
+                        </span>
+                      </label>
+                      <label className="switch-row">
+                        <input
+                          type="checkbox"
+                          checked={gitForm.pushEnabled}
+                          disabled={gitBusy}
+                          onChange={() => setGitForm({ ...gitForm, pushEnabled: !gitForm.pushEnabled })}
+                        />
+                        <span>
+                          <strong>Push to remote</strong>{" "}
+                          <span className="muted">— needs a token with write access</span>
+                        </span>
+                      </label>
+                      <label className="switch-row">
+                        <input
+                          type="checkbox"
+                          checked={gitForm.autoMergeOnConfirm}
+                          disabled={gitBusy}
+                          onChange={() =>
+                            setGitForm({ ...gitForm, autoMergeOnConfirm: !gitForm.autoMergeOnConfirm })
+                          }
+                        />
+                        <span>
+                          <strong>Merge on confirm</strong>{" "}
+                          <span className="muted">— merge &amp; delete the fix branch when confirmed</span>
+                        </span>
+                      </label>
+                    </div>
+                  </>
+                )}
+              </section>
+
+              {/* Apply — persist config + clone, then show live connection status. */}
+              <section className="settings-card">
+                <h3>Apply &amp; connect</h3>
+                <p className="git-hint">
+                  Saves the settings above and {git?.enabled ? "clones the repository" : "stores them"} —
+                  cloning streams its progress below.
+                </p>
+                <div className="pipe-actions" style={{ marginTop: 0 }}>
+                  <button
+                    className="primary-btn"
+                    disabled={
+                      gitBusy ||
+                      !gitForm.repoUrl.trim() ||
+                      !gitForm.workingBranch.trim() ||
+                      !(gitVal.status === "valid" || git?.connected)
+                    }
+                    onClick={applyGit}
+                    title={gitVal.status === "valid" || git?.connected ? "" : "Validate the repository first"}
+                  >
+                    {gitBusy ? "Applying…" : git?.enabled ? "Apply changes & clone" : "Save settings"}
+                  </button>
+                  {!git?.enabled && (
+                    <span className="chip chip-info">read-only — set ENABLE_GIT_SOURCE=true to clone</span>
+                  )}
+                </div>
+
+                {gitError && (
+                  <div className="git-status-row">
+                    <span className="chip chip-warn">{gitError}</span>
+                  </div>
+                )}
+                {gitSteps.length > 0 && <AgentSteps steps={gitSteps} title="Clone progress" />}
+
+                <hr className="git-divider" />
+                <div className="git-status-row" style={{ marginTop: 0 }}>
                   <span className={`chip ${git?.connected ? "chip-ok" : "chip-warn"}`}>
                     {git?.connected ? "connected" : "not connected"}
                   </span>
                   {git?.repoUrlPreview && <span className="chip chip-info">{git.repoUrlPreview}</span>}
                   {git?.currentBranch && <span className="chip chip-info">on {git.currentBranch}</span>}
-                  {git?.tokenConfigured && <span className="chip chip-ok">token set</span>}
                   {git?.dirty && <span className="chip chip-warn">uncommitted changes</span>}
-                  {git?.lastError && <span className="chip chip-warn">{git.lastError}</span>}
+                  {git?.lastError && !gitError && <span className="chip chip-warn">{git.lastError}</span>}
                 </div>
 
                 {git && git.branches.length > 0 && (
