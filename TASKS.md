@@ -48,6 +48,10 @@
 
 ## Feature backlog (pull into T8 only if time allows; do not threaten deadline)
 
+- **Done:** Git source — add a repo by URL, branch-per-fix, push-gated, and confirm-to-merge into a
+  configurable working branch (with branch cleanup). See README §"Git source". Backend
+  `internal/gitsource`; UI in Settings → Git source + a "Confirm fixed" action. Tested against the
+  bundled demo published via `scripts/publish_demo_repo.ps1` (single-repo, per limited AI access).
 - Confidence score + alternative root-cause hypotheses.
 - Suggested regression test that would catch the bug.
 - Severity/impact ranking of open problems (Dynatrace affected-users data).

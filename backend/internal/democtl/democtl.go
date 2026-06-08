@@ -109,6 +109,21 @@ func (c *Controller) SetBuildGenerator(fn BuildGenFunc) { c.buildGen = fn }
 // SetSettings wires the runtime pipeline settings store (read for the health-check URL).
 func (c *Controller) SetSettings(s *settings.Store) { c.settings = s }
 
+// SetSourceRoot re-points the controller at a newly-connected Git source clone. The
+// clone is its own git repo with the app at its root, so demoDir and repoRoot both
+// become dir (apply/build/run operate on the clone). Safe to call at runtime.
+func (c *Controller) SetSourceRoot(dir string) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		abs = dir
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.demoDir = abs
+	c.repoRoot = abs
+	c.binPath = filepath.Join(abs, "demo_app_run"+exeSuffix())
+}
+
 // New builds a controller. sourceRoot is the demo_app dir (SOURCE_ROOT).
 func New(sourceRoot, demoURL, dtEnvironment, dtAPIToken string, patches *tools.PatchStore) *Controller {
 	demoDir, _ := filepath.Abs(sourceRoot)

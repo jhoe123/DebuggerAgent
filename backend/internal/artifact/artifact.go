@@ -113,6 +113,41 @@ func (s *Store) RecordRun(problemIDs []string, res api.PipelineResult) {
 	}
 }
 
+// RecordFixBranch records the per-problem Git fix branch (and whether it has been
+// pushed). It does not change the overall lifecycle state — the fix branch is created
+// alongside staging/applying, before a human confirms.
+func (s *Store) RecordFixBranch(problemID, branch string, pushed bool) {
+	if problemID == "" || branch == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a := s.get(problemID, "", "")
+	a.FixBranch = branch
+	if pushed {
+		a.Pushed = true
+	}
+	s.stamp(a)
+}
+
+// RecordConfirmed marks a fix as human-confirmed: its branch was merged into the
+// working branch. Sets overall=confirmed (a terminal state alongside deployed).
+func (s *Store) RecordConfirmed(problemID string, pushed bool) {
+	if problemID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a := s.get(problemID, "", "")
+	a.Confirmed = true
+	a.Overall = "confirmed"
+	a.MergedAt = nowRFC()
+	if pushed {
+		a.Pushed = true
+	}
+	s.stamp(a)
+}
+
 // List returns all artifacts, most-recently-updated first.
 func (s *Store) List() []api.ProblemArtifact {
 	s.mu.Lock()

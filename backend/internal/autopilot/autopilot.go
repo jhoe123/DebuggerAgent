@@ -17,6 +17,7 @@ import (
 	"github.com/patchpilot/backend/internal/api"
 	"github.com/patchpilot/backend/internal/artifact"
 	"github.com/patchpilot/backend/internal/democtl"
+	"github.com/patchpilot/backend/internal/gitsource"
 	"github.com/patchpilot/backend/internal/history"
 )
 
@@ -29,6 +30,7 @@ type Engine struct {
 	demo      *democtl.Controller // nil => propose-only (no apply/build/deploy)
 	hist      *history.Store
 	arts      *artifact.Store
+	git       *gitsource.Manager // optional: commit auto-fixes to a per-problem branch
 	localMode bool
 
 	mu       sync.Mutex
@@ -63,6 +65,10 @@ func New(ag *agent.Service, demo *democtl.Controller, hist *history.Store, arts 
 		queue:    make(chan string, 128),
 	}
 }
+
+// SetGitSource wires the managed Git source so successful auto-fixes are committed to a
+// per-problem branch (push gated). The autopilot NEVER merges — confirmation does.
+func (e *Engine) SetGitSource(gs *gitsource.Manager) { e.git = gs }
 
 // Run starts the serial worker and the problem poller until ctx is cancelled.
 func (e *Engine) Run(ctx context.Context, interval time.Duration, list ListFunc) {
@@ -205,6 +211,15 @@ func (e *Engine) process(parent context.Context, id string) {
 	e.hist.RecordPipeline(id, res)
 	e.arts.RecordRun([]string{id}, res)
 	if res.Success {
+		// Commit the auto-fix to its isolated branch (push gated). Never merges — a human
+		// confirms to merge. Best-effort: a git failure doesn't undo a successful deploy.
+		if e.git != nil && patch != nil && e.git.IsConnected() && e.git.Config().BranchPerFix {
+			c, cancel := context.WithTimeout(parent, 60*time.Second)
+			if _, _, gerr := e.git.CommitPatch(c, id, map[string]string{patch.File: patch.PatchedContent}, "PatchPilot autopilot fix for "+id); gerr != nil {
+				log.Printf("autopilot: git commit for %s: %v", id, gerr)
+			}
+			cancel()
+		}
 		e.setPhase(id, "deployed", "Fixed & deployed"+verifySuffix(res), boolPtr(true))
 	} else {
 		e.setPhase(id, "failed", "Pipeline failed"+verifySuffix(res), boolPtr(false))

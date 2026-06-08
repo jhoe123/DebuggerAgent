@@ -8,6 +8,7 @@ const OVERALL_CHIP: Record<ArtifactOverall, { label: string; cls: string } | nul
   running: { label: "running ⟳", cls: "status-running" },
   deployed: { label: "deployed ✓", cls: "status-patched" },
   failed: { label: "failed ✗", cls: "status-failed" },
+  confirmed: { label: "merged ✓", cls: "status-confirmed" },
 };
 
 const PHASE: Record<AutopilotPhase, { label: string; icon: string }> = {
@@ -168,6 +169,10 @@ export function ProblemList({
                 <span className={`mini-chip ${chip.cls}`} title={`Lifecycle: ${art!.overall}`}>
                   {chip.label}
                 </span>
+              )}
+              {/* Per-problem Git fix branch (shown until the fix is confirmed/merged). */}
+              {art?.fixBranch && art.overall !== "confirmed" && (
+                <span className="mini-chip" title="Git fix branch">⎇ {art.fixBranch}</span>
               )}
               {p.dynatraceUrl && (
                 <a

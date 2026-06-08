@@ -128,10 +128,16 @@ type ProblemArtifact struct {
 	ProblemID string                   `json:"problemId"`
 	Title     string                   `json:"title,omitempty"`
 	Kind      string                   `json:"kind,omitempty"`
-	Overall   string                   `json:"overall"` // investigated|staged|running|deployed|failed
+	Overall   string                   `json:"overall"` // investigated|staged|running|deployed|failed|confirmed
 	Stages    map[string]ArtifactStage `json:"stages"`
 	Verify    string                   `json:"verify,omitempty"`
 	UpdatedAt string                   `json:"updatedAt"` // RFC3339
+
+	// Git source (set only when a Git source is configured with branch-per-fix).
+	FixBranch string `json:"fixBranch,omitempty"` // the per-problem branch this fix lives on
+	Pushed    bool   `json:"pushed,omitempty"`    // the fix branch was pushed to the remote
+	Confirmed bool   `json:"confirmed,omitempty"` // a human confirmed the fix (merged to working branch)
+	MergedAt  string `json:"mergedAt,omitempty"`  // RFC3339 when the fix branch was merged
 }
 
 // ArtifactsResponse is the GET /api/artifacts payload (newest-updated first).
@@ -240,4 +246,59 @@ type PipelineSettings struct {
 	DeployTarget  string            `json:"deployTarget"`  // local | docker | script | cloud-run
 	DeployParams  map[string]string `json:"deployParams"`  // image/tag/hostPort · project/region/service/sourceBucket/artifactRepo · scriptPath
 	HealthURL     string            `json:"healthUrl"`     // reachability check URL (full URL or path; defaults to the demo app URL)
+}
+
+// --- Git source (branch-per-fix + confirm-to-merge; backend is source of truth) ---
+
+// GitSourceConfig configures the managed Git source (POST /api/git-source/config).
+// AuthToken is a secret (HTTPS PAT); an empty value leaves the stored token unchanged
+// so toggling a flag never wipes it. The raw token is never returned by any GET.
+type GitSourceConfig struct {
+	RepoURL            string `json:"repoUrl"`
+	AuthToken          string `json:"authToken,omitempty"` // secret (HTTPS PAT); empty = keep existing
+	WorkingBranch      string `json:"workingBranch"`       // integration branch fixes merge into (default "main")
+	BranchPrefix       string `json:"branchPrefix"`        // prefix for per-fix branches (default "patchpilot/fix-")
+	BranchPerFix       bool   `json:"branchPerFix"`        // create an isolated branch per fix
+	AutoMergeOnConfirm bool   `json:"autoMergeOnConfirm"`  // on confirm, merge the fix branch then delete it
+	PushEnabled        bool   `json:"pushEnabled"`         // permission gate: push to the remote (else local-only)
+	CommitAuthorName   string `json:"commitAuthorName"`
+	CommitAuthorEmail  string `json:"commitAuthorEmail"`
+	CloneDir           string `json:"cloneDir,omitempty"` // where the repo is cloned (default <PATCH_OUTPUT_DIR>/gitsrc)
+}
+
+// GitFixBranch is one active per-problem fix branch.
+type GitFixBranch struct {
+	Name      string `json:"name"`
+	ProblemID string `json:"problemId,omitempty"`
+}
+
+// GitSourceStatus is the GET /api/git-source payload. It never returns the raw token
+// or a token-bearing URL — only display-safe fields.
+type GitSourceStatus struct {
+	Enabled            bool           `json:"enabled"`         // mutating ops permitted (ENABLE_GIT_SOURCE + git present)
+	Configured         bool           `json:"configured"`      // a repo URL is set
+	Connected          bool           `json:"connected"`       // a clone exists on disk
+	Dirty              bool           `json:"dirty"`           // working tree has uncommitted changes
+	TokenConfigured    bool           `json:"tokenConfigured"` // a PAT is stored
+	RepoURLPreview     string         `json:"repoUrlPreview,omitempty"`
+	WorkingBranch      string         `json:"workingBranch"`
+	CurrentBranch      string         `json:"currentBranch,omitempty"`
+	BranchPrefix       string         `json:"branchPrefix"`
+	BranchPerFix       bool           `json:"branchPerFix"`
+	AutoMergeOnConfirm bool           `json:"autoMergeOnConfirm"`
+	PushEnabled        bool           `json:"pushEnabled"`
+	CommitAuthorName   string         `json:"commitAuthorName"`
+	CommitAuthorEmail  string         `json:"commitAuthorEmail"`
+	Branches           []GitFixBranch `json:"branches"`
+	LastError          string         `json:"lastError,omitempty"`
+}
+
+// ConfirmFixResult is returned by POST /api/confirm-fix (the human merge gate).
+type ConfirmFixResult struct {
+	ProblemID    string `json:"problemId"`
+	Merged       bool   `json:"merged"`
+	MergedBranch string `json:"mergedBranch,omitempty"` // the fix branch merged + deleted
+	IntoBranch   string `json:"intoBranch,omitempty"`   // the working branch it merged into
+	Pushed       bool   `json:"pushed,omitempty"`
+	Detail       string `json:"detail,omitempty"`
 }

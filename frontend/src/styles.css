@@ -140,6 +140,7 @@ body {
 .mini-chip.status-running { color: var(--accent); border-color: var(--accent); }
 .mini-chip.status-patched { color: var(--add); border-color: var(--add); }
 .mini-chip.status-failed { color: var(--del); border-color: var(--del); }
+.mini-chip.status-confirmed { color: #d2a8ff; border-color: #8957e5; }
 
 /* Stage tracker: durable per-problem lifecycle status (server artifact). */
 .stage-tracker { border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; margin-bottom: 1rem; background: var(--panel-2); }
@@ -148,6 +149,9 @@ body {
 .stage-tracker.overall-deployed .stage-overall { color: var(--add); }
 .stage-tracker.overall-failed .stage-overall { color: var(--del); }
 .stage-tracker.overall-staged .stage-overall { color: #e3b341; }
+.stage-tracker.overall-confirmed .stage-overall { color: #d2a8ff; }
+.confirm-fix { margin-top: 0.5rem; }
+.confirm-fix .muted { margin-top: 0.35rem; font-size: 0.8rem; }
 .stage-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 .stage-chip { font-size: 0.72rem; border: 1px solid var(--border); border-radius: 999px; padding: 0.15rem 0.55rem; color: var(--muted); white-space: nowrap; }
 .stage-chip .stage-ico { font-weight: 700; }

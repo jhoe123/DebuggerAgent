@@ -178,6 +178,46 @@ on Cloud Run — never commit it.
 > Cloud Run scales to zero, so the poller only runs while an instance is warm. For a reliable live
 > demo, run the backend locally with the webhook set, or deploy with `--min-instances=1`.
 
+## Git source — branch-per-fix + confirm-to-merge (optional)
+
+Instead of patching the bundled `demo_app` in place, PatchPilot can manage fixes in a **real Git
+repository**: it clones the repo, makes the clone the active source the agent reads/patches, opens
+an **isolated branch per fix**, commits the fix there, and — **only when you click "Confirm
+fixed"** — merges that branch into a configured **working branch** and deletes it. The agent,
+pipeline, and autopilot may commit to a fix branch, but **a merge into the working branch only ever
+happens via the human confirm action** — preserving PatchPilot's human-in-the-loop boundary.
+
+Configure it in **Settings → Git source**:
+
+- **Repository URL** + **Working branch** (e.g. `main`) and a **fix branch prefix**.
+- **Auth token (HTTPS PAT)** — a secret; it is injected per git call (never written to
+  `.git/config` or the URL) and **never returned by the API** (only a masked preview / "token set").
+- Toggles: **Create a branch per fix**, **Push to remote** (permission gate — off ⇒ all
+  branch/commit/merge work stays local), and **Merge & delete branch on confirm**.
+- Click **Connect / Clone**. The clone becomes the active source root.
+
+Endpoints: `GET/POST /api/git-source`, `POST /api/git-source/connect`, `POST /api/git-source/branch`,
+`POST /api/confirm-fix` (the merge gate), `POST /api/git-source/cleanup`. The mutating ones need the
+`git` binary (installed in the Docker image) and the feature flag, which is **on by default** — set
+`ENABLE_GIT_SOURCE=false` to disable. It stays harmless until a repo is configured, and pushing
+still requires a token + "Push to remote"; see the `GIT_SOURCE_*` block in `.env.example`. On hosted
+Cloud Run, deploy with
+`--min-instances=1 --max-instances=1` so the clone + branch state stay on one instance; with push
+enabled, the pushed branches on the remote are the durable record across cold starts.
+
+**Publish the demo as a Git source:** the bundled ShopFlow `demo_app` can be pushed as a standalone
+public repo and used as the source. Create an empty public repo on GitHub, then run:
+
+```powershell
+pwsh scripts/publish_demo_repo.ps1 -RemoteUrl https://github.com/<you>/patchpilot-demo-app.git
+```
+
+> **Tested with:** the bundled ShopFlow demo published via `scripts/publish_demo_repo.ps1`. Due to
+> limited AI/model access during development, the Git source + confirm-to-merge flow was validated
+> against **this single repository only**. Other hosts (GitLab/Bitbucket/self-hosted) and branch
+> layouts are best-effort. The merge path assumes a conflict-free `--no-ff` merge; conflicts are
+> aborted and reported for manual resolution (out of scope).
+
 ## Deploy (Cloud Run)
 
 The root `Dockerfile` ships a Node 24 runtime (to run the Dynatrace MCP server) plus the Go
