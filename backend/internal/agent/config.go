@@ -59,7 +59,7 @@ type Config struct {
 	GitSourceAuthToken     string // GIT_SOURCE_TOKEN (secret HTTPS PAT; never committed)
 	GitSourceWorkingBranch string // GIT_SOURCE_WORKING_BRANCH (default "main")
 	GitSourceBranchPrefix  string // GIT_SOURCE_BRANCH_PREFIX (default "patchpilot/fix-")
-	GitSourceBranchPerFix  bool   // GIT_SOURCE_BRANCH_PER_FIX
+	GitSourceBranchPerFix  bool   // GIT_SOURCE_BRANCH_PER_FIX (default on)
 	GitSourceAutoMerge     bool   // GIT_SOURCE_AUTO_MERGE (default on)
 	GitSourcePushEnabled   bool   // GIT_SOURCE_PUSH_ENABLED (default off)
 	GitSourceCommitName    string // GIT_SOURCE_COMMIT_NAME (default "PatchPilot")
@@ -111,7 +111,7 @@ func LoadConfig() Config {
 		GitSourceAuthToken:     os.Getenv("GIT_SOURCE_TOKEN"),
 		GitSourceWorkingBranch: env("GIT_SOURCE_WORKING_BRANCH", "main"),
 		GitSourceBranchPrefix:  env("GIT_SOURCE_BRANCH_PREFIX", "patchpilot/fix-"),
-		GitSourceBranchPerFix:  os.Getenv("GIT_SOURCE_BRANCH_PER_FIX") == "true",
+		GitSourceBranchPerFix:  os.Getenv("GIT_SOURCE_BRANCH_PER_FIX") != "false", // default on; opt out with "false"
 		GitSourceAutoMerge:     os.Getenv("GIT_SOURCE_AUTO_MERGE") != "false", // default on
 		GitSourcePushEnabled:   os.Getenv("GIT_SOURCE_PUSH_ENABLED") == "true",
 		GitSourceCommitName:    env("GIT_SOURCE_COMMIT_NAME", "PatchPilot"),
