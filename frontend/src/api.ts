@@ -17,14 +17,27 @@ import type {
 } from "./types";
 import { mockInvestigation, mockProblems, mockScan } from "./mock";
 
-const BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+const ENV_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+
+// Key the SettingsContext writes to. Read at request time so a backend-URL override
+// in Settings takes effect without a rebuild. Falls back to the build-time env value.
+export const BACKEND_URL_KEY = "da.backendUrl";
+export function getApiBase(): string {
+  try {
+    const v = localStorage.getItem(BACKEND_URL_KEY);
+    if (v != null && v.trim() !== "") return v.trim().replace(/\/$/, "");
+  } catch {
+    /* localStorage unavailable */
+  }
+  return ENV_BASE;
+}
 
 let usedMock = false;
 /** True if any call has fallen back to mock data this session. */
 export const wasMock = () => usedMock;
 
 async function real<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${getApiBase()}${path}`, {
     headers: { "Content-Type": "application/json" },
     ...init,
   });
@@ -103,7 +116,7 @@ async function consumeSSE<T>(
   body: unknown,
   onStep: (s: Step) => void,
 ): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${getApiBase()}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

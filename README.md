@@ -105,12 +105,14 @@ HTTP 500 to fixed. Logic lives in [`backend/internal/democtl`](backend/internal/
 A **Test Console** (clearly labeled "testing only") lets you trigger the incident, reset the demo
 source to its committed buggy state (`git checkout`), and see status — for repeatable demos.
 
-These controls are **gated by `ENABLE_TEST_CONSOLE` and are local-only** (hidden on the hosted URL,
-where the demo stays human-gated). Enable locally:
+These controls are **gated by `ENABLE_TEST_CONSOLE`, which defaults ON locally** so the full app
+works out of the box. The backend OWNS demo_app (git-resets, builds, runs, restarts it) when on, so
+the **hosted Cloud Run image explicitly pins `ENABLE_TEST_CONSOLE=false`** (see Dockerfile) — the
+public demo stays human-gated. Set `ENABLE_TEST_CONSOLE=false` to disable locally too.
 
 ```bash
-# backend OWNS demo_app (builds, runs, restarts it) when the flag is on:
-cd backend && ENABLE_TEST_CONSOLE=true go run ./cmd/server   # PowerShell: $env:ENABLE_TEST_CONSOLE="true"
+# Test Console is on by default — just run:
+cd backend && go run ./cmd/server
 cd frontend && npm run dev
 ```
 
