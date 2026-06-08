@@ -109,12 +109,25 @@ export interface HistoryResponse {
   entries: HistoryEntry[];
 }
 
+export type TestStrategy = "auto" | "reuse" | "generate" | "skip";
+export type BuildStrategy = "auto" | "script" | "default";
+export type DeployTarget = "local" | "docker" | "script" | "cloud-run";
+
+export interface DeploymentSpec {
+  target?: DeployTarget;
+  params?: Record<string, string>;
+}
+
 export interface PipelineOptions {
   apply: boolean;
   test: boolean;
   build: boolean;
   deploy: boolean;
   scenario?: "error" | "performance";
+  // Configurable test/build/deploy (backend defaults: auto / auto / local).
+  testStrategy?: TestStrategy; // reuse a test or let the agent generate one (lazy gate)
+  buildStrategy?: BuildStrategy;
+  deployment?: DeploymentSpec;
 }
 
 export interface TestStatus {

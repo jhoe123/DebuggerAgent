@@ -29,7 +29,46 @@ type Options struct {
 	Build    bool   `json:"build"`
 	Deploy   bool   `json:"deploy"`
 	Scenario string `json:"scenario"` // "error" (default) | "performance"
+
+	// TestStrategy controls the deploy gate's test resolution:
+	//   "auto" (default) — reuse a committed/existing test if one covers the fix,
+	//                       otherwise the builder agent generates one ("lazy").
+	//   "reuse"          — require an existing test; fail if none is found.
+	//   "generate"       — always generate a fresh test (skip the seeded-scenario fast path).
+	//   "skip"           — bypass the test gate.
+	TestStrategy string `json:"testStrategy,omitempty"`
+
+	// BuildStrategy controls how the build stage runs:
+	//   "auto" (default) — run a detected build script (build.ps1/build.sh/Makefile) if
+	//                       present, otherwise `go build`.
+	//   "script"         — require/generate a build script (frontend + Go) and run it.
+	//   "default"        — always `go build` (backend binary only).
+	BuildStrategy string `json:"buildStrategy,omitempty"`
+
+	// Deployment selects where/how the deploy stage ships the build (see DeploymentSpec).
+	Deployment DeploymentSpec `json:"deployment,omitempty"`
 }
+
+// DeploymentSpec selects the deploy target and its parameters. Target is one of:
+//   "" / "local" — restart the local demo_app process (default).
+//   "docker"     — build an image and run it as a container. Params: image, tag, containerName, hostPort.
+//   "script"     — run a (detected or generated) deploy script. Params: scriptPath.
+//   "cloud-run"  — build via Cloud Build and deploy to Cloud Run (handled by the cloud runner).
+type DeploymentSpec struct {
+	Target string            `json:"target,omitempty"`
+	Params map[string]string `json:"params,omitempty"`
+}
+
+// TestGenFunc resolves the regression test guarding the latest patch: it returns the
+// `go test -run` name and any NEW test files to write (empty => an existing test is
+// reused). errOut (when non-empty) is a repair turn after the generated test failed to
+// compile. Supplied by the server so democtl stays decoupled from the agent package.
+type TestGenFunc func(ctx context.Context, file, rationale, errOut string) (runName string, files map[string]string, err error)
+
+// BuildGenFunc generates a build artifact on demand (a build script or Dockerfile),
+// returning file -> content. errOut (when non-empty) is a repair turn. Supplied by the
+// server so democtl stays decoupled from the agent package.
+type BuildGenFunc func(ctx context.Context, kind, errOut string) (files map[string]string, err error)
 
 // Controller owns the local demo_app process and source.
 type Controller struct {
@@ -39,11 +78,21 @@ type Controller struct {
 	binPath  string
 	otlpEnv  []string
 	patches  *tools.PatchStore
+	testGen  TestGenFunc  // optional: detect-or-generate the regression test (set by server)
+	buildGen BuildGenFunc // optional: generate a build artifact when missing (set by server)
 
 	mu   sync.Mutex
 	proc *exec.Cmd
 	http *http.Client
 }
+
+// SetTestGenerator wires the builder agent's detect-or-generate test resolver. When
+// unset, the pipeline falls back to the committed seeded-scenario tests.
+func (c *Controller) SetTestGenerator(fn TestGenFunc) { c.testGen = fn }
+
+// SetBuildGenerator wires the builder agent's build-artifact generator. When unset, the
+// build stage falls back to a detected build script or `go build`.
+func (c *Controller) SetBuildGenerator(fn BuildGenFunc) { c.buildGen = fn }
 
 // New builds a controller. sourceRoot is the demo_app dir (SOURCE_ROOT).
 func New(sourceRoot, demoURL, dtEnvironment, dtAPIToken string, patches *tools.PatchStore) *Controller {
@@ -188,49 +237,30 @@ func (c *Controller) Remediate(ctx context.Context, opts Options, emit func(api.
 		step(api.Step{Stage: "apply", Status: "ok", Message: "Patch applied to demo_app/main.go"})
 	}
 	if opts.Test {
-		step(api.Step{Stage: "test", Status: "running", Message: "Running go test (regression gate)"})
-		ok, out := c.test(ctx, opts.Scenario)
+		ok, out := c.resolveTest(ctx, opts, step)
 		if !ok {
 			return fail("test", "Tests failed — deploy blocked", out)
 		}
 		step(api.Step{Stage: "test", Status: "ok", Message: "Tests passed", Detail: out})
 	}
 	if opts.Build {
-		step(api.Step{Stage: "build", Status: "running", Message: "Building demo_app"})
-		ok, out := c.build(ctx)
+		ok, out := c.resolveBuild(ctx, opts, step)
 		if !ok {
 			return fail("build", "Build failed", out)
 		}
 		step(api.Step{Stage: "build", Status: "ok", Message: "Build succeeded"})
 	}
 	if opts.Deploy {
-		step(api.Step{Stage: "deploy", Status: "running", Message: "Restarting demo_app with the fix"})
-		if err := c.launch(); err != nil {
-			return fail("deploy", "Deploy (restart) failed", err.Error())
+		baseURL, err := c.deploy(ctx, opts.Deployment, step)
+		if err != nil {
+			return fail("deploy", "Deploy failed", err.Error())
 		}
-		time.Sleep(1500 * time.Millisecond) // let it bind the port
-		step(api.Step{Stage: "deploy", Status: "ok", Message: "demo_app restarted"})
+		step(api.Step{Stage: "deploy", Status: "ok", Message: "Deployed (" + targetName(opts.Deployment) + ")"})
 
-		if opts.Scenario == "performance" {
-			step(api.Step{Stage: "verify", Status: "running", Message: "Verifying /report?n=200 latency"})
-			code, elapsed := c.timedGet(ctx, "/report?n=200")
-			verify = fmt.Sprintf("~657ms -> %dms", elapsed.Milliseconds())
-			if code == 200 && elapsed < 150*time.Millisecond {
-				step(api.Step{Stage: "verify", Status: "ok", Message: fmt.Sprintf("Fixed — /report?n=200 now %dms (was ~657ms)", elapsed.Milliseconds())})
-			} else {
-				step(api.Step{Stage: "verify", Status: "fail", Message: fmt.Sprintf("Still slow/failing: HTTP %d in %dms", code, elapsed.Milliseconds())})
-				return api.PipelineResult{Steps: steps, Success: false, Files: files, Verify: verify}
-			}
-		} else {
-			step(api.Step{Stage: "verify", Status: "running", Message: "Verifying /checkout?index=99"})
-			code, _ := c.get(ctx, "/checkout?index=99")
-			verify = fmt.Sprintf("500 -> %d", code)
-			if code == 200 || code == 400 {
-				step(api.Step{Stage: "verify", Status: "ok", Message: fmt.Sprintf("Fixed — /checkout?index=99 now returns HTTP %d (was 500)", code)})
-			} else {
-				step(api.Step{Stage: "verify", Status: "fail", Message: fmt.Sprintf("Unexpected status HTTP %d", code)})
-				return api.PipelineResult{Steps: steps, Success: false, Files: files, Verify: verify}
-			}
+		ok, v := c.verifyDeploy(ctx, baseURL, opts.Scenario, step)
+		verify = v
+		if !ok {
+			return api.PipelineResult{Steps: steps, Success: false, Files: files, Verify: verify}
 		}
 	}
 	return api.PipelineResult{Steps: steps, Success: true, Files: files, Verify: verify}
@@ -412,17 +442,185 @@ func capitalize(s string) string {
 // test runs the regression gate scoped to the scenario being remediated, so fixing
 // one bug isn't blocked by the other deliberately-seeded bug's failing test.
 func (c *Controller) test(ctx context.Context, scenario string) (bool, string) {
-	runFilter := "TestCheckout"
-	if scenario == "performance" {
-		runFilter = "TestReport"
+	filter := scenarioFilter(scenario)
+	if filter == "" {
+		filter = "TestCheckout" // legacy default
 	}
+	return c.runTest(ctx, filter)
+}
+
+// scenarioFilter maps the two seeded scenarios to their committed regression tests.
+// Empty => no committed test (the lazy detect-or-generate path handles it).
+func scenarioFilter(scenario string) string {
+	switch scenario {
+	case "performance":
+		return "TestReport"
+	case "error":
+		return "TestCheckout"
+	default:
+		return ""
+	}
+}
+
+// runTest runs a single named test (scoped with -run so other deliberately-seeded
+// bugs' failing tests don't block this gate).
+func (c *Controller) runTest(ctx context.Context, runFilter string) (bool, string) {
 	out, err := c.goCmd(ctx, "test", "-run", runFilter, "./...")
 	return err == nil, out
+}
+
+// looksLikeBuildError distinguishes a generated test that doesn't COMPILE (worth one
+// agent repair turn) from one that compiles but FAILS its assertion (a real gate fail).
+func looksLikeBuildError(out string) bool {
+	for _, s := range []string{"build failed", "[build failed]", "cannot use", "undefined:", "syntax error", "expected ", "imported and not used", "redeclared", "does not implement"} {
+		if strings.Contains(out, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveTest runs the deploy gate's test. For the two seeded scenarios it reuses the
+// committed tests (fast, no AI). Otherwise it asks the builder agent to detect-or-
+// generate a regression test (the "lazy" gate), writes any generated file, runs it, and
+// repairs a non-compiling generated test up to maxRepairAttempts. It emits progress
+// steps; the caller emits the terminal ok/fail step. Returns (passed, output).
+func (c *Controller) resolveTest(ctx context.Context, opts Options, step func(api.Step)) (bool, string) {
+	strategy := opts.TestStrategy
+	if strategy == "" {
+		strategy = "auto"
+	}
+	if strategy == "skip" {
+		step(api.Step{Stage: "test", Status: "info", Message: "Test gate skipped (testStrategy=skip)"})
+		return true, "test gate skipped"
+	}
+
+	// Fast path: the seeded scenarios ship committed regression tests.
+	if strategy != "generate" {
+		if filter := scenarioFilter(opts.Scenario); filter != "" {
+			step(api.Step{Stage: "test", Status: "running", Message: "Running committed regression test: " + filter})
+			return c.runTest(ctx, filter)
+		}
+	}
+
+	// No generator wired (agent unavailable): fall back to the package gate.
+	if c.testGen == nil {
+		step(api.Step{Stage: "test", Status: "running", Message: "Running go test (regression gate)"})
+		return c.test(ctx, opts.Scenario)
+	}
+
+	var file, rationale string
+	if prop := c.patches.Latest(); prop != nil {
+		file, rationale = prop.File, prop.Rationale
+	}
+
+	errOut, attempt := "", 0
+	for {
+		step(api.Step{Stage: "test", Status: "running", Message: "Resolving regression test (reuse existing or generate)…"})
+		runName, files, err := c.testGen(ctx, file, rationale, errOut)
+		if err != nil {
+			return false, "test generation failed: " + err.Error()
+		}
+		if strategy == "reuse" && len(files) > 0 {
+			return false, "no existing test covers the fix and testStrategy=reuse"
+		}
+		if len(files) > 0 {
+			if err := c.writeFiles(files); err != nil {
+				return false, "writing the generated test failed: " + err.Error()
+			}
+			step(api.Step{Stage: "test", Status: "info", Message: "Generated regression test: " + strings.Join(sortedFileKeys(files), ", ")})
+		} else {
+			step(api.Step{Stage: "test", Status: "info", Message: "Reusing existing test " + runName})
+		}
+		step(api.Step{Stage: "test", Status: "running", Message: "Running go test -run " + runName})
+		ok, out := c.runTest(ctx, runName)
+		if ok {
+			return true, out
+		}
+		if len(files) > 0 && attempt < maxRepairAttempts && looksLikeBuildError(out) {
+			attempt++
+			step(api.Step{Stage: "debug", Status: "running", Message: fmt.Sprintf("Generated test didn't compile — agent repairing (attempt %d/%d)", attempt, maxRepairAttempts)})
+			errOut = out
+			continue
+		}
+		return false, out
+	}
 }
 
 func (c *Controller) build(ctx context.Context) (bool, string) {
 	out, err := c.goCmd(ctx, "build", "-o", c.binPath, ".")
 	return err == nil, out
+}
+
+// resolveBuild runs the build stage: a detected build script (build.ps1/build.sh/
+// Makefile) when present, otherwise `go build`. With BuildStrategy "script" it asks the
+// builder agent to generate a build script (frontend + Go) when none exists. After a
+// script build it ensures the local-deploy binary exists. Emits progress; returns (ok, out).
+func (c *Controller) resolveBuild(ctx context.Context, opts Options, step func(api.Step)) (bool, string) {
+	strategy := opts.BuildStrategy
+	if strategy == "" {
+		strategy = "auto"
+	}
+	if strategy != "default" {
+		script := c.detectBuildScript()
+		if script == "" && strategy == "script" && c.buildGen != nil {
+			step(api.Step{Stage: "build", Status: "running", Message: "No build script found — generating one…"})
+			files, err := c.buildGen(ctx, "build-script", "")
+			if err != nil {
+				return false, "build-script generation failed: " + err.Error()
+			}
+			if err := c.writeFiles(files); err != nil {
+				return false, "writing the generated build script failed: " + err.Error()
+			}
+			step(api.Step{Stage: "build", Status: "info", Message: "Generated build script: " + strings.Join(sortedFileKeys(files), ", ")})
+			script = c.detectBuildScript()
+		}
+		if script != "" {
+			step(api.Step{Stage: "build", Status: "running", Message: "Running build script: " + script})
+			ok, out := c.runBuildScript(ctx, script)
+			if !ok {
+				return false, out
+			}
+			// The script may target a frontend bundle / image only; make sure the
+			// local-deploy binary exists so the deploy (restart) step can launch it.
+			if _, err := os.Stat(c.binPath); err != nil {
+				if bok, bout := c.build(ctx); !bok {
+					return false, out + "\n" + bout
+				}
+			}
+			return true, out
+		}
+	}
+	step(api.Step{Stage: "build", Status: "running", Message: "Building demo_app (go build)"})
+	return c.build(ctx)
+}
+
+// detectBuildScript returns the name of a recognized build script under demoDir, or "".
+func (c *Controller) detectBuildScript() string {
+	for _, name := range []string{"build.ps1", "build.sh", "Makefile", "makefile"} {
+		if _, err := os.Stat(filepath.Join(c.demoDir, name)); err == nil {
+			return name
+		}
+	}
+	return ""
+}
+
+// runBuildScript executes a detected build script in demoDir, returning its output.
+func (c *Controller) runBuildScript(ctx context.Context, script string) (bool, string) {
+	var cmd *exec.Cmd
+	switch {
+	case script == "Makefile" || script == "makefile":
+		cmd = exec.CommandContext(ctx, "make", "build")
+	case strings.HasSuffix(script, ".ps1"):
+		cmd = exec.CommandContext(ctx, "pwsh", "-NoProfile", "-File", script)
+	case strings.HasSuffix(script, ".sh"):
+		cmd = exec.CommandContext(ctx, "bash", script)
+	default:
+		return false, "unrecognized build script: " + script
+	}
+	cmd.Dir = c.demoDir
+	b, err := cmd.CombinedOutput()
+	return err == nil, string(b)
 }
 
 func (c *Controller) goCmd(ctx context.Context, args ...string) (string, error) {

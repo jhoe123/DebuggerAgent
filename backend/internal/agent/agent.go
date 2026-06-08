@@ -52,15 +52,19 @@ type proposePatchResult struct {
 	Message string `json:"message"`
 }
 
-// Service wraps the ADK runners and the agent's stores. It hosts two agents that
-// share the same model and source sandbox: the investigator (runner/patches) and
-// the instrumenter (instrument/instStore — see instrument.go).
+// Service wraps the ADK runners and the agent's stores. It hosts three agents that
+// share the same model and source sandbox: the investigator (runner/patches), the
+// instrumenter (instrument/instStore — see instrument.go), and the builder
+// (builder/artifacts — generates tests and build/deploy scripts; see builder.go).
 type Service struct {
 	runner  *runner.Runner
 	patches *tools.PatchStore
 
 	instrument *runner.Runner
 	instStore  *tools.InstrumentStore
+
+	builder   *runner.Runner
+	artifacts *tools.ArtifactStore
 }
 
 // newReadSourceTool builds the read_source FunctionTool over a sandbox. It is
@@ -184,7 +188,38 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		return nil, fmt.Errorf("create instrumenter runner: %w", err)
 	}
 
-	return &Service{runner: r, patches: patches, instrument: ir, instStore: instStore}, nil
+	// Third agent: the builder (generates regression tests + build/deploy artifacts on
+	// demand, reusing existing ones when present). Shares the model and source sandbox.
+	artifacts := tools.NewArtifactStore(sb)
+	bldTools, err := builderTools(sb, artifacts)
+	if err != nil {
+		return nil, err
+	}
+	bldAgent, err := llmagent.New(llmagent.Config{
+		Name:        "builder_agent",
+		Description: "Generates regression tests and build/deploy artifacts on demand, reusing existing ones when present.",
+		Model:       model,
+		Instruction: builderPrompt,
+		Tools:       bldTools,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create builder agent: %w", err)
+	}
+	br, err := runner.New(runner.Config{
+		AppName:           "patchpilot-builder",
+		Agent:             bldAgent,
+		SessionService:    session.InMemoryService(),
+		AutoCreateSession: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create builder runner: %w", err)
+	}
+
+	return &Service{
+		runner: r, patches: patches,
+		instrument: ir, instStore: instStore,
+		builder: br, artifacts: artifacts,
+	}, nil
 }
 
 // Patches exposes the patch store (used by the approve-patch endpoint).
@@ -250,6 +285,8 @@ func toolMessage(name string) string {
 		return "Proposing instrumentation points…"
 	case "write_instrumented_file":
 		return "Writing instrumented source…"
+	case "write_artifact":
+		return "Generating test/build artifact…"
 	default:
 		return "Calling " + name + "…"
 	}

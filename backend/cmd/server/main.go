@@ -59,6 +59,20 @@ func main() {
 			log.Printf("Test Console + auto-remediation ENABLED (backend owns demo_app at %s)", cfg.DemoAppURL)
 		}
 	}
+	// Wire the builder agent's lazy test resolver into the pipeline's deploy gate:
+	// reuse an existing test if one covers the fix, otherwise generate one on demand.
+	if demo != nil {
+		demo.SetTestGenerator(func(ctx context.Context, file, rationale, errOut string) (string, map[string]string, error) {
+			res, err := svc.GenerateTest(ctx, fmt.Sprintf("testgen-%d", time.Now().UnixNano()), file, rationale, errOut, nil)
+			if err != nil {
+				return "", nil, err
+			}
+			return res.RunName, res.Files, nil
+		})
+		demo.SetBuildGenerator(func(ctx context.Context, kind, errOut string) (map[string]string, error) {
+			return svc.GenerateBuildArtifact(ctx, fmt.Sprintf("buildgen-%d", time.Now().UnixNano()), kind, errOut, nil)
+		})
+	}
 	hist := history.New(200, cfg.PatchOutputDir)
 	ap := autopilot.New(svc, demo, hist)
 	h := &handlers{agent: svc, dt: dt, demo: demo, hist: hist, ap: ap}
