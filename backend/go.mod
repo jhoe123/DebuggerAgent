@@ -1,4 +1,4 @@
-module github.com/debuggeragent/backend
+module github.com/patchpilot/backend
 
 go 1.25.0
 

@@ -1,4 +1,4 @@
-# DebuggerAgent — Task Tracker
+# PatchPilot — Task Tracker
 
 > **Single source of truth for progress.** Update **Current State** every session.
 > Context lives in [PROJECT.md](PROJECT.md); setup/run in [README.md](README.md).
@@ -20,7 +20,7 @@
   agent, launches the MCP server under Node 24, calls `list_problems` live, and returns structured
   JSON (tenant currently has 0 problems → that's T3). Key gotcha solved: prepend Node 24 to the
   MCP child's PATH so npx doesn't spawn the server under system Node 20.12.
-- **T1–T10 DONE. Live on Cloud Run:** https://debugger-agent-460077240357.us-central1.run.app
+- **T1–T10 DONE. Live on Cloud Run:** https://patchpilot-460077240357.us-central1.run.app
   - All `/api` endpoints verified on the hosted URL: problems list, investigate (root cause @
     `main.go:99`, **~31s** on **gemini-3.5-flash**), approve-patch (writes to /tmp/patches).
   - Deploy: `gcloud run deploy --source` via **git-bash** (PowerShell gcloud's strict TLS rejects

@@ -60,7 +60,7 @@ const timer = setTimeout(() => {
   const init = await send("initialize", {
     protocolVersion: "2024-11-05",
     capabilities: {},
-    clientInfo: { name: "debuggeragent-verify", version: "0.1.0" },
+    clientInfo: { name: "patchpilot-verify", version: "0.1.0" },
   });
   if (init.error) {
     console.error("initialize error:", JSON.stringify(init.error));

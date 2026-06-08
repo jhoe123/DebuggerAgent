@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/debuggeragent/backend/internal/agent"
-	"github.com/debuggeragent/backend/internal/api"
-	"github.com/debuggeragent/backend/internal/democtl"
-	"github.com/debuggeragent/backend/internal/history"
+	"github.com/patchpilot/backend/internal/agent"
+	"github.com/patchpilot/backend/internal/api"
+	"github.com/patchpilot/backend/internal/democtl"
+	"github.com/patchpilot/backend/internal/history"
 )
 
 // ListFunc returns the current set of problems (e.g. dynatrace.Client.ListProblems).

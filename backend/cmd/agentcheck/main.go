@@ -9,7 +9,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/debuggeragent/backend/internal/agent"
+	"github.com/patchpilot/backend/internal/agent"
 )
 
 func main() {

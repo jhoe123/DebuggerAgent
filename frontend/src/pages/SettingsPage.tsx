@@ -55,7 +55,7 @@ export function SettingsPage() {
       <section className="settings-card">
         <h3>Backend</h3>
         <p className="muted">
-          Point the UI at a different DebuggerAgent backend. Leave blank to use the default.
+          Point the UI at a different PatchPilot backend. Leave blank to use the default.
         </p>
         <div className="qa-input">
           <input

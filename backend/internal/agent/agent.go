@@ -1,4 +1,4 @@
-// Package agent defines the DebuggerAgent root-cause investigator: an ADK Go
+// Package agent defines the PatchPilot root-cause investigator: an ADK Go
 // llmagent backed by Gemini 3.1 (Vertex AI) with three tools —
 //
 //   - the Dynatrace MCP toolset (problems, logs, spans, DQL) over stdio,
@@ -23,8 +23,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/debuggeragent/backend/internal/dynatrace"
-	"github.com/debuggeragent/backend/internal/tools"
+	"github.com/patchpilot/backend/internal/dynatrace"
+	"github.com/patchpilot/backend/internal/tools"
 )
 
 type readSourceArgs struct {
@@ -136,7 +136,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	}
 
 	ag, err := llmagent.New(llmagent.Config{
-		Name:        "debugger_agent",
+		Name:        "patchpilot_agent",
 		Description: "Investigates Dynatrace production problems, correlates them to source code, and proposes human-gated fixes.",
 		Model:       model,
 		Instruction: systemPrompt,
@@ -148,7 +148,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	}
 
 	r, err := runner.New(runner.Config{
-		AppName:           "debuggeragent",
+		AppName:           "patchpilot",
 		Agent:             ag,
 		SessionService:    session.InMemoryService(),
 		AutoCreateSession: true,
@@ -175,7 +175,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		return nil, fmt.Errorf("create instrumenter agent: %w", err)
 	}
 	ir, err := runner.New(runner.Config{
-		AppName:           "debuggeragent-instrument",
+		AppName:           "patchpilot-instrument",
 		Agent:             instAgent,
 		SessionService:    session.InMemoryService(),
 		AutoCreateSession: true,
@@ -255,7 +255,7 @@ func toolMessage(name string) string {
 	}
 }
 
-const systemPrompt = `You are DebuggerAgent, an SRE/debugging assistant that investigates
+const systemPrompt = `You are PatchPilot, an SRE/debugging assistant that investigates
 production problems observed in Dynatrace and proposes human-gated code fixes.
 
 Be efficient: make the MINIMUM number of tool calls. Do not call tools you don't need

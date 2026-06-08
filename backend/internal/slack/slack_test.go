@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/debuggeragent/backend/internal/api"
+	"github.com/patchpilot/backend/internal/api"
 )
 
 func TestFingerprintStableAndChanges(t *testing.T) {

@@ -1,8 +1,9 @@
-# DebuggerAgent
+# PatchPilot
 
-> AI Root-Cause Investigator for the **Google Cloud Rapid Agent Hackathon** — **Dynatrace track**.
-> Captures a production issue from **Dynatrace**, uses **Gemini 3** to correlate it to source
-> code and explain the root cause, and **proposes a human-gated patch** (no auto-merge/deploy).
+> **Detect → diagnose → patch → verify.** AI Root-Cause Investigator for the **Google Cloud
+> Rapid Agent Hackathon** — **Dynatrace track**. Captures a production issue from **Dynatrace**,
+> uses **Gemini 3** to correlate it to source code and explain the root cause, and **proposes a
+> human-gated patch** (no auto-merge/deploy).
 
 - **Context:** [PROJECT.md](PROJECT.md) · **Progress/tasks:** [TASKS.md](TASKS.md)
 - **Stack:** React + TypeScript (frontend) · Go + ADK Go (backend agent, Gemini 3) ·
@@ -184,7 +185,7 @@ server, the built React app, and `demo_app`. Vertex auth uses the Cloud Run runt
 account (grant it `roles/aiplatform.user`); the Dynatrace token is passed as an env var.
 
 ```bash
-gcloud run deploy debugger-agent --source . --region us-central1 --allow-unauthenticated \
+gcloud run deploy patchpilot --source . --region us-central1 --allow-unauthenticated \
   --memory 1Gi --cpu 1 --timeout 300 \
   --set-env-vars "GOOGLE_CLOUD_PROJECT=<project>,GEMINI_MODEL=gemini-3.5-flash,DT_ENVIRONMENT=<tenant>,DT_PLATFORM_TOKEN=<token>"
 ```
@@ -193,7 +194,7 @@ are baked into the image. For production use Secret Manager (`--set-secrets`) fo
 
 ## For hackathon judges
 
-- **Hosted URL:** https://debugger-agent-460077240357.us-central1.run.app — **no login required.**
+- **Hosted URL:** https://patchpilot-460077240357.us-central1.run.app — **no login required.**
 - **Test flow:** open the URL → select the **checkout-demo** problem (a real `index out of range`
   exception captured from Dynatrace) → click **Investigate with AI** → the agent queries Dynatrace
   spans, reads the source, and returns the root cause at `main.go:99` with a proposed patch
@@ -206,7 +207,7 @@ are baked into the image. For production use Secret Manager (`--set-secrets`) fo
 ## Pushing to GitHub (manual — `gh` not installed in this environment)
 
 ```bash
-git remote add origin https://github.com/<you>/DebuggerAgent.git
+git remote add origin https://github.com/<you>/PatchPilot.git
 git push -u origin main
 ```
 Ensure the repo is **public** and the `LICENSE` file is present (both required by the rules).

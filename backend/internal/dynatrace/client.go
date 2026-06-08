@@ -6,26 +6,31 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/debuggeragent/backend/internal/api"
+	"github.com/patchpilot/backend/internal/api"
 )
 
 // Client is a thin direct MCP client to the Dynatrace MCP server.
 type Client struct {
-	session *mcp.ClientSession
-	env     string // tenant base URL (for deep links)
+	session      *mcp.ClientSession
+	env          string    // tenant base URL (for deep links)
+	baseline     time.Time // server start time — the lookback floor when clearOnStart is set
+	clearOnStart bool      // only surface problems detected after startup (CLEAR_ISSUES_ON_START)
 }
 
 // Open launches the Dynatrace MCP server and initializes an MCP session.
-func Open(ctx context.Context, nodeBin, dtEnvironment, dtToken string) (*Client, error) {
-	c := mcp.NewClient(&mcp.Implementation{Name: "debuggeragent", Version: "0.1.0"}, nil)
+// When clearOnStart is true, ListProblems only looks back to this moment, so a
+// freshly started server presents a clean (empty) problem list.
+func Open(ctx context.Context, nodeBin, dtEnvironment, dtToken string, clearOnStart bool) (*Client, error) {
+	c := mcp.NewClient(&mcp.Implementation{Name: "patchpilot", Version: "0.1.0"}, nil)
 	sess, err := c.Connect(ctx, &mcp.CommandTransport{Command: MCPCommand(nodeBin, dtEnvironment, dtToken)}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("connect dynatrace mcp: %w", err)
 	}
-	return &Client{session: sess, env: dtEnvironment}, nil
+	return &Client{session: sess, env: dtEnvironment, baseline: time.Now(), clearOnStart: clearOnStart}, nil
 }
 
 func (c *Client) Close() error { return c.session.Close() }
@@ -61,12 +66,35 @@ func (c *Client) executeDQLMeta(ctx context.Context, dql string) ([]map[string]a
 // a bare nanosecond literal in DQL, so we filter on the parsed value here instead.
 const perfThresholdMs = 500
 
+// maxLookbackSecs caps how far back we ever scan (the original 30-day window) so a
+// long-running instance doesn't grow its Grail scan unbounded.
+const maxLookbackSecs = 30 * 24 * 3600
+
+// fromWindow returns the DQL `from:` expression for the problem queries. With
+// clear-on-start enabled it looks back only to server boot (a window that grows
+// with uptime, capped at 30 days) so pre-existing problems stay hidden; otherwise
+// it uses the full 30-day window.
+func (c *Client) fromWindow() string {
+	if !c.clearOnStart {
+		return "now()-30d"
+	}
+	secs := int64(time.Since(c.baseline).Seconds())
+	if secs < 1 {
+		secs = 1
+	}
+	if secs > maxLookbackSecs {
+		secs = maxLookbackSecs
+	}
+	return fmt.Sprintf("now()-%ds", secs)
+}
+
 // ListProblems summarizes recent error spans AND slow operations into one problem
 // list for the UI. Each problem is tagged Kind ("error"|"performance"); its ID is a
 // composite "<kind>:<service>" so error and perf problems on the same service don't
 // collide (the server's prompt builder splits it back apart).
 func (c *Client) ListProblems(ctx context.Context) ([]api.Problem, error) {
-	const errorDQL = `fetch spans, from:now()-30d
+	from := c.fromWindow()
+	errorDQL := `fetch spans, from:` + from + `
 | filter span.status_code == "error"
 | summarize count = count(), latest = max(start_time), by:{service.name, span.name, span.status_message}
 | sort latest desc
@@ -74,7 +102,7 @@ func (c *Client) ListProblems(ctx context.Context) ([]api.Problem, error) {
 	// Non-error spans: status_code is null for unset spans, and `!= "error"` drops
 	// nulls (null != x is null), so include nulls explicitly. The p95 threshold is
 	// applied in Go below (duration-typed p95 won't compare in DQL).
-	const perfDQL = `fetch spans, from:now()-30d
+	perfDQL := `fetch spans, from:` + from + `
 | filter isNull(span.status_code) or span.status_code != "error"
 | summarize count = count(), p95 = percentile(duration, 95), latest = max(start_time), by:{service.name, span.name}
 | sort p95 desc

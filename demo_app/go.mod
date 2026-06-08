@@ -1,4 +1,4 @@
-module github.com/debuggeragent/demo_app
+module github.com/patchpilot/demo_app
 
 go 1.25.0
 

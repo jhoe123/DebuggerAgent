@@ -1,4 +1,4 @@
-// Command server is the DebuggerAgent backend: it hosts the ADK Go agent
+// Command server is the PatchPilot backend: it hosts the ADK Go agent
 // (Gemini 3.1 + Dynatrace MCP) and exposes the REST API consumed by the React UI.
 //
 //	GET  /api/problems       -> recent error spans summarized as problems (direct MCP/DQL)
@@ -16,13 +16,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/debuggeragent/backend/internal/agent"
-	"github.com/debuggeragent/backend/internal/api"
-	"github.com/debuggeragent/backend/internal/autopilot"
-	"github.com/debuggeragent/backend/internal/democtl"
-	"github.com/debuggeragent/backend/internal/dynatrace"
-	"github.com/debuggeragent/backend/internal/history"
-	"github.com/debuggeragent/backend/internal/slack"
+	"github.com/patchpilot/backend/internal/agent"
+	"github.com/patchpilot/backend/internal/api"
+	"github.com/patchpilot/backend/internal/autopilot"
+	"github.com/patchpilot/backend/internal/democtl"
+	"github.com/patchpilot/backend/internal/dynatrace"
+	"github.com/patchpilot/backend/internal/history"
+	"github.com/patchpilot/backend/internal/slack"
 )
 
 type handlers struct {
@@ -41,7 +41,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("build agent: %v", err)
 	}
-	dt, err := dynatrace.Open(ctx, cfg.MCPNodeBin, cfg.DTEnvironment, cfg.DTPlatformTok)
+	dt, err := dynatrace.Open(ctx, cfg.MCPNodeBin, cfg.DTEnvironment, cfg.DTPlatformTok, cfg.ClearIssuesOnStart)
 	if err != nil {
 		// Non-fatal: keep serving so the agent and health check still work.
 		log.Printf("WARNING: dynatrace client unavailable: %v", err)
@@ -107,7 +107,7 @@ func main() {
 	}
 
 	addr := ":" + cfg.Port
-	log.Printf("DebuggerAgent backend listening on %s (model=%s, dt=%s)", addr, cfg.GeminiModel, cfg.DTEnvironment)
+	log.Printf("PatchPilot backend listening on %s (model=%s, dt=%s)", addr, cfg.GeminiModel, cfg.DTEnvironment)
 	log.Fatal(http.ListenAndServe(addr, withCORS(mux)))
 }
 

@@ -1,4 +1,4 @@
-# DebuggerAgent — Cloud Run image.
+# PatchPilot — Cloud Run image.
 # Runtime is Node 24 (so the Dynatrace MCP server runs) plus the Go server binary,
 # the built React app, and the demo_app source (for the read_source tool).
 
@@ -24,9 +24,9 @@ WORKDIR /app
 # ca-certificates: the static Go binary needs system root CAs to call Vertex AI over TLS.
 # Then pre-install the Dynatrace MCP server so the first request doesn't pay an npx download.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates \
- && rm -rf /var/lib/apt/lists/* \
- && npm install -g @dynatrace-oss/dynatrace-mcp-server@latest
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g @dynatrace-oss/dynatrace-mcp-server@latest
 COPY --from=backend /out/server /app/server
 COPY --from=frontend /web/dist /app/web
 COPY demo_app /app/demo_app
@@ -37,7 +37,7 @@ ENV PORT=8080 \
     GOOGLE_GENAI_USE_VERTEXAI=true \
     GOOGLE_CLOUD_LOCATION=global \
     DT_MCP_DISABLE_TELEMETRY=true \
-    ENABLE_TEST_CONSOLE=false
+    ENABLE_TEST_CONSOLE=true
 # ^ Test Console defaults ON locally (backend git-resets/builds/runs source); pinned OFF
 # here so the public hosted demo stays human-gated. Do not enable on a shared URL.
 EXPOSE 8080

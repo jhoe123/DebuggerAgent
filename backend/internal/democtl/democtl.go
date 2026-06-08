@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/debuggeragent/backend/internal/api"
-	"github.com/debuggeragent/backend/internal/tools"
+	"github.com/patchpilot/backend/internal/api"
+	"github.com/patchpilot/backend/internal/tools"
 )
 
 // Options selects which pipeline stages run and which scenario to remediate.

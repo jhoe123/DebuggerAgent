@@ -1,4 +1,4 @@
-# DebuggerAgent — Project Context
+# PatchPilot — Project Context
 
 > **Purpose of this file:** give any developer or AI assistant full context to pick up
 > the project and continue. Pair it with [TASKS.md](TASKS.md) (the live task tracker) and
@@ -66,7 +66,7 @@ Dynatrace tenant (problem + logs + traces/spans + DQL)
 ## Repo layout
 
 ```
-DebuggerAgent/
+PatchPilot/
   PROJECT.md          # this file — context
   TASKS.md            # live task tracker + Current State
   README.md           # setup / run / judge instructions
@@ -100,6 +100,6 @@ DebuggerAgent/
   MCP server needs Node ≥ 20.17 → spawn it with portable Node 24 (`MCP_NODE_BIN`).
 - 2026-06-08: T3–T9 done & deployed. Backend exceptions are read from the `spans` Grail table via
   execute_dql (not list_problems/list_exceptions). Switched model to **gemini-3.5-flash** (fast,
-  ~30s investigations). **Live on Cloud Run:** https://debugger-agent-460077240357.us-central1.run.app
+  ~30s investigations). **Live on Cloud Run:** https://patchpilot-460077240357.us-central1.run.app
   Deploy gotchas solved: run gcloud via git-bash (PowerShell's strict TLS rejects the Avast root);
   runtime image needs `ca-certificates` for the Go→Vertex TLS call.

@@ -15,8 +15,8 @@ import (
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 
-	"github.com/debuggeragent/backend/internal/api"
-	"github.com/debuggeragent/backend/internal/tools"
+	"github.com/patchpilot/backend/internal/api"
+	"github.com/patchpilot/backend/internal/tools"
 )
 
 type instrumentCandidateArg struct {

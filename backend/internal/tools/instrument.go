@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/debuggeragent/backend/internal/api"
+	"github.com/patchpilot/backend/internal/api"
 )
 
 // InstrumentStore holds the latest instrumentation scan (the candidate set the

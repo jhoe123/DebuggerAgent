@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/debuggeragent/backend/internal/api"
+	"github.com/patchpilot/backend/internal/api"
 )
 
 // Store is a thread-safe ring buffer of history entries (newest last internally).

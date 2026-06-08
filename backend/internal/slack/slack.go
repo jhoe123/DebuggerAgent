@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/debuggeragent/backend/internal/api"
+	"github.com/patchpilot/backend/internal/api"
 )
 
 // ListFunc returns the current set of problems (e.g. dynatrace.Client.ListProblems).
@@ -128,7 +128,7 @@ func bucket(n int) int {
 
 func digestText(problems []api.Problem) string {
 	if len(problems) == 0 {
-		return ":white_check_mark: *DebuggerAgent* — no active issues."
+		return ":white_check_mark: *PatchPilot* — no active issues."
 	}
 	var errs, perf int
 	for _, p := range problems {
@@ -139,7 +139,7 @@ func digestText(problems []api.Problem) string {
 		}
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, ":lady_beetle: *DebuggerAgent — %d active issue(s)* (%d error, %d performance)\n",
+	fmt.Fprintf(&b, ":lady_beetle: *PatchPilot — %d active issue(s)* (%d error, %d performance)\n",
 		len(problems), errs, perf)
 	max := len(problems)
 	if max > 10 {

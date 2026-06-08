@@ -25,8 +25,8 @@ export function AppShell() {
   return (
     <div className="shell">
       <aside className="sidebar">
-        <h1 className="sidebar-brand">DebuggerAgent</h1>
-        <p className="sidebar-tag">AI SRE · Gemini + Dynatrace</p>
+        <h1 className="sidebar-brand">PatchPilot</h1>
+        <p className="sidebar-tag">Detect → diagnose → patch → verify</p>
         <nav className="nav">
           {NAV.map((n) => (
             <NavLink

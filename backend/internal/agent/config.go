@@ -22,6 +22,12 @@ type Config struct {
 	PatchOutputDir string // PATCH_OUTPUT_DIR (approved patches)
 	Port           string // PORT
 
+	// ClearIssuesOnStart, when true (default), makes ListProblems only surface
+	// problems that occur after server startup — so a freshly started instance
+	// shows a clean, empty problem list and accumulates only new incidents.
+	// Set CLEAR_ISSUES_ON_START=false to show the full 30-day problem window.
+	ClearIssuesOnStart bool // CLEAR_ISSUES_ON_START
+
 	// Local-only demo controls (Test Console + auto-remediation pipeline).
 	EnableTestConsole bool   // ENABLE_TEST_CONSOLE — gates demo controls; OFF in the hosted product
 	DemoAppURL        string // DEMO_APP_URL (default http://localhost:9090)
@@ -48,6 +54,10 @@ func LoadConfig() Config {
 		SourceRoot:     resolveRel(baseDir, env("SOURCE_ROOT", "./demo_app")),
 		PatchOutputDir: resolveRel(baseDir, env("PATCH_OUTPUT_DIR", "./.patches")),
 		Port:           env("PORT", "8080"),
+
+		// Default ON: a fresh server starts with a clean problem list (only
+		// incidents detected after startup). Opt out with "false".
+		ClearIssuesOnStart: os.Getenv("CLEAR_ISSUES_ON_START") != "false",
 
 		// Default ON so the full app works locally; the hosted Cloud Run image pins
 		// ENABLE_TEST_CONSOLE=false (see Dockerfile) to stay human-gated. Opt out with "false".
