@@ -32,6 +32,14 @@ type Config struct {
 	EnableTestConsole bool   // ENABLE_TEST_CONSOLE — gates demo controls; OFF in the hosted product
 	DemoAppURL        string // DEMO_APP_URL (default http://localhost:9090)
 
+	// Cloud-native pipeline: when PipelineMode=="cloudbuild", remediation deploys
+	// demo_app to Cloud Run via Cloud Build instead of the local democtl runner.
+	PipelineMode         string // PIPELINE_MODE: "local" (default) | "cloudbuild"
+	CloudRunRegion       string // CLOUD_RUN_REGION (also the Artifact Registry location)
+	CloudBuildBucket     string // CLOUD_BUILD_SOURCE_BUCKET (default <project>_cloudbuild)
+	ArtifactRegistryRepo string // ARTIFACT_REGISTRY_REPO (Docker repo; default "patchpilot")
+	DemoRunService       string // DEMO_RUN_SERVICE (Cloud Run service name; default "checkout-demo")
+
 	// Slack notifications (optional). When SlackWebhookURL is set, a background
 	// poller posts a consolidated digest of active bugs.
 	SlackWebhookURL   string        // SLACK_WEBHOOK_URL (secret; never committed)
@@ -63,6 +71,12 @@ func LoadConfig() Config {
 		// ENABLE_TEST_CONSOLE=false (see Dockerfile) to stay human-gated. Opt out with "false".
 		EnableTestConsole: os.Getenv("ENABLE_TEST_CONSOLE") != "false",
 		DemoAppURL:        env("DEMO_APP_URL", "http://localhost:9090"),
+
+		PipelineMode:         env("PIPELINE_MODE", "local"),
+		CloudRunRegion:       os.Getenv("CLOUD_RUN_REGION"),
+		CloudBuildBucket:     os.Getenv("CLOUD_BUILD_SOURCE_BUCKET"),
+		ArtifactRegistryRepo: env("ARTIFACT_REGISTRY_REPO", "patchpilot"),
+		DemoRunService:       env("DEMO_RUN_SERVICE", "checkout-demo"),
 
 		SlackWebhookURL:   os.Getenv("SLACK_WEBHOOK_URL"),
 		SlackPollInterval: parseDuration(env("SLACK_POLL_INTERVAL", "60s"), 60*time.Second),

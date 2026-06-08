@@ -22,15 +22,23 @@ import (
 	"github.com/patchpilot/backend/internal/democtl"
 	"github.com/patchpilot/backend/internal/dynatrace"
 	"github.com/patchpilot/backend/internal/history"
+	"github.com/patchpilot/backend/internal/pipeline"
 	"github.com/patchpilot/backend/internal/slack"
 )
 
+// remediator runs the apply→test→build→deploy pipeline. Implemented by the local
+// democtl.Controller and the cloud pipeline.CloudRunner; selected by PIPELINE_MODE.
+type remediator interface {
+	Remediate(ctx context.Context, opts democtl.Options, emit func(api.Step)) api.PipelineResult
+}
+
 type handlers struct {
-	agent *agent.Service
-	dt    *dynatrace.Client
-	demo  *democtl.Controller // nil unless ENABLE_TEST_CONSOLE=true (local only)
-	hist  *history.Store
-	ap    *autopilot.Engine
+	agent  *agent.Service
+	dt     *dynatrace.Client
+	demo   *democtl.Controller // nil unless ENABLE_TEST_CONSOLE=true (local only)
+	runner remediator          // local (democtl) or cloud (pipeline.CloudRunner)
+	hist   *history.Store
+	ap     *autopilot.Engine
 }
 
 func main() {
@@ -59,23 +67,48 @@ func main() {
 			log.Printf("Test Console + auto-remediation ENABLED (backend owns demo_app at %s)", cfg.DemoAppURL)
 		}
 	}
-	// Wire the builder agent's lazy test resolver into the pipeline's deploy gate:
-	// reuse an existing test if one covers the fix, otherwise generate one on demand.
-	if demo != nil {
-		demo.SetTestGenerator(func(ctx context.Context, file, rationale, errOut string) (string, map[string]string, error) {
-			res, err := svc.GenerateTest(ctx, fmt.Sprintf("testgen-%d", time.Now().UnixNano()), file, rationale, errOut, nil)
-			if err != nil {
-				return "", nil, err
-			}
-			return res.RunName, res.Files, nil
-		})
-		demo.SetBuildGenerator(func(ctx context.Context, kind, errOut string) (map[string]string, error) {
-			return svc.GenerateBuildArtifact(ctx, fmt.Sprintf("buildgen-%d", time.Now().UnixNano()), kind, errOut, nil)
-		})
+	// The builder agent's lazy test/build artifact resolvers, shared by both runners:
+	// reuse an existing test/script if it covers the need, otherwise generate one.
+	genTest := func(ctx context.Context, file, rationale, errOut string) (string, map[string]string, error) {
+		res, err := svc.GenerateTest(ctx, fmt.Sprintf("testgen-%d", time.Now().UnixNano()), file, rationale, errOut, nil)
+		if err != nil {
+			return "", nil, err
+		}
+		return res.RunName, res.Files, nil
 	}
+	genBuild := func(ctx context.Context, kind, errOut string) (map[string]string, error) {
+		return svc.GenerateBuildArtifact(ctx, fmt.Sprintf("buildgen-%d", time.Now().UnixNano()), kind, errOut, nil)
+	}
+
+	var runner remediator
+	if demo != nil {
+		demo.SetTestGenerator(genTest)
+		demo.SetBuildGenerator(genBuild)
+		runner = demo
+	}
+	// Cloud-native runner: deploy demo_app to Cloud Run via Cloud Build (hosted path).
+	if cfg.PipelineMode == "cloudbuild" {
+		cloud, err := pipeline.New(ctx, pipeline.Config{
+			Project:    cfg.GCPProject,
+			Region:     cfg.CloudRunRegion,
+			Bucket:     cfg.CloudBuildBucket,
+			ARRepo:     cfg.ArtifactRegistryRepo,
+			Service:    cfg.DemoRunService,
+			SourceRoot: cfg.SourceRoot,
+			OTLPEnv:    otlpEnvMap(cfg),
+		}, svc.Patches(), genTest, genBuild)
+		if err != nil {
+			log.Printf("WARNING: cloud build runner unavailable: %v", err)
+		} else {
+			defer cloud.Close()
+			runner = cloud
+			log.Printf("Cloud Build remediation ENABLED (deploy %q to Cloud Run in %s) — protect this endpoint (it deploys on approval)", cfg.DemoRunService, cfg.CloudRunRegion)
+		}
+	}
+
 	hist := history.New(200, cfg.PatchOutputDir)
 	ap := autopilot.New(svc, demo, hist)
-	h := &handlers{agent: svc, dt: dt, demo: demo, hist: hist, ap: ap}
+	h := &handlers{agent: svc, dt: dt, demo: demo, runner: runner, hist: hist, ap: ap}
 
 	// Auto-patch daemon: reacts to newly-detected problems (opt-in via Settings).
 	if dt != nil {
@@ -111,8 +144,11 @@ func main() {
 		mux.HandleFunc("GET /api/test/status", h.testStatus)
 		mux.HandleFunc("POST /api/test/trigger", h.testTrigger)
 		mux.HandleFunc("POST /api/test/reset", h.testReset)
-		mux.HandleFunc("POST /api/remediate", h.remediate)
 		mux.HandleFunc("POST /api/instrument/apply", h.instrumentApply) // writes/builds/runs — local only
+	}
+	// Remediation runs on the local democtl runner or the cloud Cloud Build runner.
+	if h.runner != nil {
+		mux.HandleFunc("POST /api/remediate", h.remediate)
 	}
 
 	// Optional: serve the built React app (Cloud Run). Dev uses the Vite server.
@@ -294,9 +330,10 @@ func (h *handlers) remediate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	// Cloud Build (build + deploy to Cloud Run) can take many minutes; allow for it.
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Minute)
 	defer cancel()
-	result := h.demo.Remediate(ctx, opts, func(s api.Step) { sse.step(s) })
+	result := h.runner.Remediate(ctx, opts, func(s api.Step) { sse.step(s) })
 	h.hist.RecordPipeline(req.ProblemID, result)
 	sse.event("result", result)
 }
@@ -404,6 +441,24 @@ func (h *handlers) autopilotCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	h.ap.Cancel(req.ProblemID)
 	writeJSON(w, http.StatusOK, h.ap.Snapshot())
+}
+
+// otlpEnvMap derives the OTEL_* env to set on the Cloud Run-deployed demo_app so it
+// reports to Dynatrace (mirrors democtl's local OTLP wiring). Returns nil with no creds.
+func otlpEnvMap(cfg agent.Config) map[string]string {
+	if cfg.DTApiToken == "" || cfg.DTEnvironment == "" {
+		return nil
+	}
+	endpoint := strings.Replace(cfg.DTEnvironment, ".apps.", ".live.", 1) + "/api/v2/otlp"
+	svc := cfg.DemoRunService
+	if svc == "" {
+		svc = "checkout-demo"
+	}
+	return map[string]string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
+		"OTEL_EXPORTER_OTLP_HEADERS":  "Authorization=Api-Token " + cfg.DTApiToken,
+		"OTEL_SERVICE_NAME":           svc,
+	}
 }
 
 // filesOfCandidates returns the unique set of files referenced by candidates.
