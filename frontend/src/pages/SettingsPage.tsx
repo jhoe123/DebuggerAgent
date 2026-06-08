@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSettings, type ThemeMode } from "../context/SettingsContext";
 import { useAppData } from "../context/AppDataContext";
 import { useAutopilot } from "../context/AutopilotContext";
 import { useToast } from "../context/ToastContext";
+import { getSlack, setSlackConfig, testSlack } from "../api";
+import type { SlackStatus } from "../types";
 
 const THEMES: ThemeMode[] = ["light", "dark", "system"];
 const STAGES = ["apply", "test", "build", "deploy"] as const;
@@ -13,6 +15,15 @@ export function SettingsPage() {
   const { config, setConfig, localMode } = useAutopilot();
   const toast = useToast();
   const [url, setUrl] = useState(backendUrl);
+  const [slack, setSlack] = useState<SlackStatus | null>(null);
+  const [hook, setHook] = useState("");
+  const [slackBusy, setSlackBusy] = useState(false);
+
+  useEffect(() => {
+    getSlack()
+      .then(setSlack)
+      .catch(() => setSlack(null));
+  }, []);
 
   function saveUrl() {
     const v = url.trim();
@@ -33,6 +44,31 @@ export function SettingsPage() {
       await setConfig({ ...config, stages: { ...config.stages, [k]: !config.stages[k] } });
     } catch {
       toast.error("Couldn't update stages");
+    }
+  }
+
+  async function saveSlack(enabled: boolean, webhookUrl?: string) {
+    setSlackBusy(true);
+    try {
+      const s = await setSlackConfig({ enabled, webhookUrl });
+      setSlack(s);
+      if (webhookUrl) setHook("");
+      toast.success("Slack settings saved");
+    } catch {
+      toast.error("Couldn't update Slack");
+    } finally {
+      setSlackBusy(false);
+    }
+  }
+  async function sendSlackTest() {
+    setSlackBusy(true);
+    try {
+      await testSlack();
+      toast.success("Test message sent to Slack");
+    } catch {
+      toast.error("Slack test failed — check the webhook");
+    } finally {
+      setSlackBusy(false);
     }
   }
 
@@ -101,6 +137,43 @@ export function SettingsPage() {
             )}
           </>
         )}
+      </section>
+
+      <section className="settings-card">
+        <h3>Slack notifications</h3>
+        <p className="muted">
+          Post a consolidated digest of active bugs to a Slack Incoming Webhook (re-posted only when
+          the bug set changes). Applies to the running backend instance.
+        </p>
+        <label className="switch-row">
+          <input
+            type="checkbox"
+            checked={slack?.enabled ?? false}
+            disabled={slackBusy || slack === null}
+            onChange={() => saveSlack(!(slack?.enabled ?? false))}
+          />
+          <span>
+            <strong>Slack digest</strong> is {slack?.enabled ? "ON" : "off"}
+            {slack && !slack.configured && " — no webhook set"}
+            {slack?.configured && slack.preview ? ` · ${slack.preview}` : ""}
+          </span>
+        </label>
+        <div className="qa-input">
+          <input
+            type="password"
+            value={hook}
+            placeholder={slack?.configured ? "Replace webhook…" : "https://hooks.slack.com/services/…"}
+            onChange={(e) => setHook(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && hook.trim() && saveSlack(true, hook.trim())}
+            aria-label="Slack webhook URL"
+          />
+          <button disabled={slackBusy || !hook.trim()} onClick={() => saveSlack(true, hook.trim())}>
+            Save
+          </button>
+          <button className="seg-btn" disabled={slackBusy || !slack?.configured} onClick={sendSlackTest}>
+            Send test
+          </button>
+        </div>
       </section>
 
       <section className="settings-card">

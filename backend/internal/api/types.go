@@ -173,3 +173,19 @@ type TriggerResult struct {
 type AskResult struct {
 	Answer string `json:"answer"`
 }
+
+// SlackConfig sets the Slack notifier at runtime (POST /api/slack/config).
+// WebhookURL is a secret; an empty value leaves the existing webhook unchanged
+// (so toggling Enabled doesn't wipe a configured webhook).
+type SlackConfig struct {
+	Enabled    bool   `json:"enabled"`
+	WebhookURL string `json:"webhookUrl,omitempty"`
+}
+
+// SlackStatus is the GET /api/slack payload. It never returns the raw webhook —
+// only whether one is configured plus a masked preview.
+type SlackStatus struct {
+	Enabled    bool   `json:"enabled"`
+	Configured bool   `json:"configured"`        // a webhook is set
+	Preview    string `json:"preview,omitempty"` // masked webhook for display
+}

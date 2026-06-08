@@ -13,6 +13,8 @@ import type {
   PipelineOptions,
   PipelineResult,
   Problem,
+  SlackConfig,
+  SlackStatus,
   Step,
   TestStatus,
   TriggerResult,
@@ -125,6 +127,21 @@ export async function cancelAutopilot(problemId: string): Promise<AutopilotSnaps
     method: "POST",
     body: JSON.stringify({ problemId }),
   });
+}
+
+// --- Slack notifications (configured from Settings; secret never returned by GET) ---
+
+export async function getSlack(): Promise<SlackStatus> {
+  return real<SlackStatus>("/api/slack");
+}
+export async function setSlackConfig(config: SlackConfig): Promise<SlackStatus> {
+  return real<SlackStatus>("/api/slack/config", {
+    method: "POST",
+    body: JSON.stringify(config),
+  });
+}
+export async function testSlack(): Promise<{ ok: boolean }> {
+  return real<{ ok: boolean }>("/api/slack/test", { method: "POST" });
 }
 
 // --- SSE helpers (live reasoning stream + pipeline) ---

@@ -33,12 +33,13 @@ type remediator interface {
 }
 
 type handlers struct {
-	agent  *agent.Service
-	dt     *dynatrace.Client
-	demo   *democtl.Controller // nil unless ENABLE_TEST_CONSOLE=true (local only)
-	runner remediator          // local (democtl) or cloud (pipeline.CloudRunner)
-	hist   *history.Store
-	ap     *autopilot.Engine
+	agent    *agent.Service
+	dt       *dynatrace.Client
+	demo     *democtl.Controller // nil unless ENABLE_TEST_CONSOLE=true (local only)
+	runner   remediator          // local (democtl) or cloud (pipeline.CloudRunner)
+	hist     *history.Store
+	ap       *autopilot.Engine
+	notifier *slack.Notifier // runtime-configurable Slack digest notifier
 }
 
 func main() {
@@ -108,7 +109,10 @@ func main() {
 
 	hist := history.New(200, cfg.PatchOutputDir)
 	ap := autopilot.New(svc, demo, hist)
-	h := &handlers{agent: svc, dt: dt, demo: demo, runner: runner, hist: hist, ap: ap}
+	// Slack notifier: seeded from SLACK_WEBHOOK_URL but reconfigurable at runtime
+	// from Settings (POST /api/slack/config). Never nil.
+	notifier := slack.New(cfg.SlackWebhookURL)
+	h := &handlers{agent: svc, dt: dt, demo: demo, runner: runner, hist: hist, ap: ap, notifier: notifier}
 
 	// Auto-patch daemon: reacts to newly-detected problems (opt-in via Settings).
 	if dt != nil {
@@ -117,11 +121,12 @@ func main() {
 		log.Printf("WARNING: Dynatrace unavailable — autopilot poller disabled")
 	}
 
-	// Slack: background poller posting a consolidated digest of active bugs.
-	if n := slack.New(cfg.SlackWebhookURL); n != nil && dt != nil {
-		go n.Run(ctx, cfg.SlackPollInterval, dt.ListProblems)
-	} else if cfg.SlackWebhookURL != "" && dt == nil {
-		log.Printf("WARNING: SLACK_WEBHOOK_URL set but Dynatrace unavailable — Slack disabled")
+	// Slack: background poller posting a consolidated digest of active bugs. Always
+	// started (it posts only while enabled+configured); needs a problem source.
+	if dt != nil {
+		go notifier.Run(ctx, cfg.SlackPollInterval, dt.ListProblems)
+	} else {
+		log.Printf("WARNING: Dynatrace unavailable — Slack digest poller disabled (test message still works)")
 	}
 
 	mux := http.NewServeMux()
@@ -139,6 +144,10 @@ func main() {
 	mux.HandleFunc("GET /api/autopilot", h.autopilotSnapshot)
 	mux.HandleFunc("POST /api/autopilot/config", h.autopilotConfig)
 	mux.HandleFunc("POST /api/autopilot/cancel", h.autopilotCancel)
+	// Slack notifications: configurable from Settings (status never returns the raw webhook).
+	mux.HandleFunc("GET /api/slack", h.slackStatus)
+	mux.HandleFunc("POST /api/slack/config", h.slackConfig)
+	mux.HandleFunc("POST /api/slack/test", h.slackTest)
 
 	if cfg.EnableTestConsole {
 		mux.HandleFunc("GET /api/test/status", h.testStatus)
@@ -441,6 +450,31 @@ func (h *handlers) autopilotCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	h.ap.Cancel(req.ProblemID)
 	writeJSON(w, http.StatusOK, h.ap.Snapshot())
+}
+
+// slackStatus returns the current Slack config (never the raw webhook).
+func (h *handlers) slackStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, h.notifier.Status())
+}
+
+// slackConfig updates the Slack notifier (enable/disable + optional webhook).
+func (h *handlers) slackConfig(w http.ResponseWriter, r *http.Request) {
+	var cfg api.SlackConfig
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid config"})
+		return
+	}
+	h.notifier.SetConfig(cfg.Enabled, cfg.WebhookURL)
+	writeJSON(w, http.StatusOK, h.notifier.Status())
+}
+
+// slackTest posts a one-off message to validate the configured webhook.
+func (h *handlers) slackTest(w http.ResponseWriter, r *http.Request) {
+	if err := h.notifier.Test(); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // otlpEnvMap derives the OTEL_* env to set on the Cloud Run-deployed demo_app so it

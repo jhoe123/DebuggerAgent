@@ -185,3 +185,16 @@ export interface TriggerResult {
 export interface AskResult {
   answer: string;
 }
+
+// --- Slack notifications (backend is source of truth; configured from Settings) ---
+
+export interface SlackStatus {
+  enabled: boolean;
+  configured: boolean; // a webhook is set
+  preview?: string; // masked webhook for display (never the raw secret)
+}
+
+export interface SlackConfig {
+  enabled: boolean;
+  webhookUrl?: string; // secret; omit/empty to leave the existing webhook unchanged
+}

@@ -53,8 +53,52 @@ func TestSyncPostsOnceThenDedupes(t *testing.T) {
 	}
 }
 
-func TestDisabledNotifierIsNil(t *testing.T) {
-	if New("") != nil {
-		t.Fatal("New(\"\") should return nil (Slack disabled)")
+func TestDisabledNotifierDoesNotPost(t *testing.T) {
+	n := New("") // non-nil, but disabled with no webhook
+	if n == nil {
+		t.Fatal("New should never return nil")
+	}
+	if st := n.Status(); st.Enabled || st.Configured {
+		t.Fatalf("New(\"\") should be disabled+unconfigured, got %+v", st)
+	}
+	// Sync is a no-op when there's no webhook to post to.
+	if err := n.Sync([]api.Problem{{ID: "error:svc", Occurrences: 1}}); err != nil {
+		t.Fatalf("Sync on an unconfigured notifier should be a no-op, got %v", err)
+	}
+	if err := n.Test(); err == nil {
+		t.Fatal("Test() should error when no webhook is configured")
+	}
+}
+
+func TestSetConfigEnablesThenDisables(t *testing.T) {
+	var posts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&posts, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	n := New("") // start disabled
+	n.SetConfig(true, srv.URL)
+	if st := n.Status(); !st.Enabled || !st.Configured {
+		t.Fatalf("expected enabled+configured after SetConfig, got %+v", st)
+	}
+	if err := n.Sync([]api.Problem{{ID: "error:svc", Occurrences: 5}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&posts); got != 1 {
+		t.Fatalf("expected 1 post after enabling, got %d", got)
+	}
+
+	// Toggling off (empty webhook keeps the secret) stops posting on a changed set.
+	n.SetConfig(false, "")
+	if st := n.Status(); st.Enabled || !st.Configured {
+		t.Fatalf("expected disabled but still configured, got %+v", st)
+	}
+	if err := n.Sync([]api.Problem{{ID: "error:svc", Occurrences: 500}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&posts); got != 1 {
+		t.Fatalf("expected no new post while disabled, got %d", got)
 	}
 }
