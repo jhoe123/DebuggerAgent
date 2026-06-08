@@ -10,6 +10,9 @@ interface Props {
   onRun: (s: Scenario) => Promise<void>;
   onReset?: (s: Scenario) => Promise<void>;
   last?: RunResult;
+  // From the build self-check: set for issue scenarios whose bug the running binary tracks
+  // (checkout/report). true = patched, false = still buggy, undefined = no signal yet.
+  fixed?: boolean;
 }
 
 function resultClass(r: RunResult): string {
@@ -18,7 +21,7 @@ function resultClass(r: RunResult): string {
   return "ok";
 }
 
-export function ScenarioCard({ scenario, onRun, onReset, last }: Props) {
+export function ScenarioCard({ scenario, onRun, onReset, last, fixed }: Props) {
   const [busy, setBusy] = useState(false);
 
   const guard = (fn: () => Promise<void>) => async () => {
@@ -31,10 +34,17 @@ export function ScenarioCard({ scenario, onRun, onReset, last }: Props) {
   };
 
   return (
-    <div className={`scenario-card${scenario.isIssue ? " issue" : ""}`}>
+    <div className={`scenario-card${scenario.isIssue ? (fixed ? " fixed" : " issue") : ""}`}>
       <div className="scenario-head">
         <h3>{scenario.title}</h3>
-        {scenario.isIssue && <BugCue />}
+        {scenario.isIssue &&
+          (fixed ? (
+            <span className="fixed-cue" title="The running binary no longer exhibits this issue">
+              ✓ fixed
+            </span>
+          ) : (
+            <BugCue />
+          ))}
       </div>
       <p className="framing">{scenario.framing}</p>
       <div className="badges">

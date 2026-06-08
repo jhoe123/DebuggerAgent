@@ -41,6 +41,37 @@ async function request(method: string, endpoint: string): Promise<RunResult> {
   }
 }
 
+// --- Build self-check (GET /api/status) ---
+// Reports whether the running binary still has the seeded bugs or has been patched, so the
+// storefront can show a buggy/patched banner. See demo_app/status.go.
+
+export type BuildVerdictKind = "buggy" | "partially-patched" | "patched";
+
+export interface BugStatus {
+  id: string; // matches a scenario id (checkout / report); the human label is resolved client-side
+  fixed: boolean;
+  detail: string;
+}
+
+export interface BuildVerdict {
+  app: string; // demo-app display name (DEMO_APP_NAME) — drives the storefront brand
+  verdict: BuildVerdictKind;
+  bugs: BugStatus[];
+}
+
+// fetchBuildStatus returns null on any failure (network error, non-200, or unparseable
+// body) so the banner degrades silently — e.g. against an older web/dist served by a
+// binary that predates the /api/status endpoint.
+export async function fetchBuildStatus(): Promise<BuildVerdict | null> {
+  try {
+    const res = await fetch("/api/status");
+    if (!res.ok) return null;
+    return (await res.json()) as BuildVerdict;
+  } catch {
+    return null;
+  }
+}
+
 export function runScenario(s: Scenario): Promise<RunResult> {
   return request(s.method, s.endpoint);
 }

@@ -2,15 +2,10 @@
 // renders an action (card/button) and declares which Dynatrace signal(s) it triggers.
 // Trim or extend the demo by editing this array.
 
-export type SignalKind =
-  | "healthy"
-  | "distributed"
-  | "exception"
-  | "slow"
-  | "dependency"
-  | "failrate"
-  | "cpu"
-  | "memory";
+// The demo is intentionally scoped to exactly two patchable bugs — one exception and one
+// slow operation — plus healthy baseline traffic, so patching both yields a fully stable
+// (all-green) storefront. Keep the signal kinds limited to what those scenarios use.
+export type SignalKind = "healthy" | "distributed" | "exception" | "slow";
 
 export interface Scenario {
   id: string;
@@ -29,10 +24,6 @@ export const SIGNAL_LABELS: Record<SignalKind, string> = {
   distributed: "Distributed trace",
   exception: "Exception",
   slow: "Slow · high p95",
-  dependency: "External dependency",
-  failrate: "Failure rate",
-  cpu: "CPU spike",
-  memory: "Memory growth",
 };
 
 export const scenarios: Scenario[] = [
@@ -58,17 +49,6 @@ export const scenarios: Scenario[] = [
       "Builds a multi-span trace waterfall: catalog.lookup → inventory.check → pricing.calc.",
   },
   {
-    id: "search",
-    title: "Search catalog",
-    framing: "Find “running shoes”.",
-    method: "GET",
-    endpoint: "/api/search?q=running%20shoes",
-    signals: ["slow"],
-    isIssue: true,
-    howToTrigger:
-      "Unindexed scan — latency grows with results and ~20% of calls hit a tail-latency spike. Shows as a slow op (high p95).",
-  },
-  {
     id: "checkout",
     title: "Place order",
     framing: "Check out the cart.",
@@ -80,59 +60,14 @@ export const scenarios: Scenario[] = [
       "Checks out an out-of-range cart line → index-out-of-range panic → HTTP 500 with a stack trace on the span.",
   },
   {
-    id: "pay",
-    title: "Pay now",
-    framing: "Charge the payment method.",
-    method: "POST",
-    endpoint: "/api/pay",
-    signals: ["dependency"],
-    isIssue: true,
-    howToTrigger:
-      "Calls an external payment gateway that fails ~30% (502) and sometimes times out (~2s). Shows a failing dependency in the service flow.",
-  },
-  {
-    id: "giftcard",
-    title: "Apply gift card",
-    framing: "Redeem promo code “PROMO2026”.",
+    id: "report",
+    title: "Sales report",
+    framing: "Generate the daily sales summary.",
     method: "GET",
-    endpoint: "/api/giftcard?code=PROMO2026",
-    signals: ["exception"],
+    endpoint: "/report?n=200",
+    signals: ["slow"],
     isIssue: true,
     howToTrigger:
-      "The new campaign’s code isn’t the expected GIFT-<amount> format → redemption throws → HTTP 400 with a recorded exception.",
-  },
-  {
-    id: "flaky",
-    title: "Add to cart",
-    framing: "Add the item to the cart.",
-    method: "GET",
-    endpoint: "/api/flaky",
-    signals: ["failrate"],
-    isIssue: true,
-    howToTrigger:
-      "~30% of adds fail under contention (HTTP 500). Click a few times to build a failure-rate spike.",
-  },
-  {
-    id: "cpu",
-    title: "Run promo engine",
-    framing: "Recompute storewide pricing.",
-    method: "GET",
-    endpoint: "/api/cpu?ms=1500",
-    signals: ["cpu"],
-    isIssue: true,
-    howToTrigger:
-      "Busy-loops a CPU core for ~1.5s recomputing prices instead of caching. Drives a CPU spike on the process.",
-  },
-  {
-    id: "mem",
-    title: "Build wishlist cache",
-    framing: "Cache the shopper’s wishlist.",
-    method: "GET",
-    endpoint: "/api/mem?mb=16",
-    resetEndpoint: "/api/mem?reset=true",
-    signals: ["memory"],
-    isIssue: true,
-    howToTrigger:
-      "Appends 16 MB to a cache that never frees — RSS climbs with each click. Use Reset to free it.",
+      "Builds a 200-row report with a per-item blocking call (~600ms). The fix removes the per-item I/O so it returns in <100ms.",
   },
 ];

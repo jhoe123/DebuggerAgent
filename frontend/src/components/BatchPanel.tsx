@@ -20,7 +20,7 @@ const OVERALL_CHIP: Record<string, { label: string; cls: string }> = {
 // and an expand toggle that reveals the staged list, strategy selectors, live steps,
 // and result. Hidden until something is staged (or a run is in flight / just finished).
 export function BatchPanel() {
-  const { staged, consoleAvailable, refreshPatches, refreshArtifacts, reloadHistory, setStreaming, artifactMap, clearPatches } = useAppData();
+  const { staged, consoleAvailable, refreshPatches, refreshArtifacts, reloadHistory, setStreaming, artifactMap, clearPatches, demoAppUrl, demoAppName } = useAppData();
   const toast = useToast();
   const [opts, setOpts] = useState<PipelineOptions>({
     apply: true,
@@ -219,6 +219,14 @@ export function BatchPanel() {
             <p className={showResult.success ? "approved" : "failed"}>
               {showResult.success ? "✓ All patches deployed" : "✗ Pipeline stopped (a gate failed)"}
               {showResult.verify && <span className="muted"> · verify: {showResult.verify}</span>}
+              {showResult.success && demoAppUrl && (
+                <>
+                  {" · "}
+                  <a href={demoAppUrl} target="_blank" rel="noreferrer">
+                    Open {demoAppName ?? "the patched app"} ↗
+                  </a>
+                </>
+              )}
             </p>
           )}
         </div>

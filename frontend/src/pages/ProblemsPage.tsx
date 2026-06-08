@@ -41,6 +41,8 @@ export function ProblemsPage() {
     refreshPatches,
     refreshArtifacts,
     gitSource,
+    demoAppUrl,
+    demoAppName,
   } = useAppData();
   const toast = useToast();
   const { runs, cancel } = useAutopilot();
@@ -425,6 +427,8 @@ export function ProblemsPage() {
               }
               onMerge={handleMerge}
               merging={mergeBusy}
+              demoAppUrl={demoAppUrl}
+              demoAppName={demoAppName}
             />
           )}
 

@@ -218,6 +218,34 @@ export async function setPipelineConfig(s: PipelineSettings): Promise<PipelineSe
   });
 }
 
+// resolveDemoAppUrl picks the best ShopFlow (demo app) URL to link testers to after a
+// deploy: the Test Console's demoAppUrl when local mode is mounted, else the pipeline
+// health URL. Returns the origin (drops any path like /healthz) or null when neither is an
+// absolute http(s) URL — so callers can hide the link rather than build a broken href.
+export function resolveDemoAppUrl(demoAppUrl?: string, healthUrl?: string): string | null {
+  for (const candidate of [demoAppUrl, healthUrl]) {
+    if (!candidate) continue;
+    try {
+      const u = new URL(candidate);
+      if (u.protocol === "http:" || u.protocol === "https:") return u.origin;
+    } catch {
+      /* not an absolute URL (e.g. a bare "/healthz" path) — skip */
+    }
+  }
+  return null;
+}
+
+// repoDisplayName derives the demo app's display name from a Git source repo URL/preview
+// (the configured source project), e.g. "github.com/acme/shop-demo.git" -> "shop-demo".
+// Returns null when no repo is configured, so callers can fall back to generic copy.
+export function repoDisplayName(repoUrl?: string): string | null {
+  const trimmed = (repoUrl ?? "").trim().replace(/\/+$/, "");
+  if (!trimmed) return null;
+  const last = trimmed.split("/").pop() ?? "";
+  const name = last.replace(/\.git$/i, "").trim();
+  return name || null;
+}
+
 // --- Git source (branch-per-fix + confirm-to-merge; token never returned by GET) ---
 
 export async function getGitSource(): Promise<GitSourceStatus> {

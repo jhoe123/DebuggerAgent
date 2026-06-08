@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
-import type { GitSourceStatus, Problem, ProblemArtifact, StagedPatch, TestStatus } from "../types";
-import { getGitSource, listArtifacts, listPatches, listProblems, testStatus, wasMock, clearPatches } from "../api";
+import type { GitSourceStatus, PipelineSettings, Problem, ProblemArtifact, StagedPatch, TestStatus } from "../types";
+import { getGitSource, getPipelineConfig, listArtifacts, listPatches, listProblems, repoDisplayName, resolveDemoAppUrl, testStatus, wasMock, clearPatches } from "../api";
 import { usePolling } from "../hooks/usePolling";
 
 interface AppDataValue {
@@ -16,6 +16,13 @@ interface AppDataValue {
   testStatus: TestStatus | undefined;
   refreshTestStatus: () => Promise<void>;
   testUpdatedAt: number | null;
+
+  // Demo app (running source project) origin to link testers to after a deploy, resolved
+  // from the Test Console URL (local) or the pipeline health URL (hosted). undefined when unknown.
+  demoAppUrl: string | undefined;
+  // Demo app display name, derived from the configured Git source repo. undefined when no
+  // source repo is configured (callers fall back to generic copy).
+  demoAppName: string | undefined;
 
   // Consolidation batch (staged patches) + durable per-problem status artifacts.
   staged: StagedPatch[];
@@ -60,6 +67,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   );
 
   const testPoll = usePolling<TestStatus>(() => testStatus(), 10000, { paused: streaming });
+  // Pipeline config rarely changes; poll slowly just to source the demo-app URL fallback.
+  const pipelinePoll = usePolling<PipelineSettings>(() => getPipelineConfig(), 60000, { paused: streaming });
   const patchesPoll = usePolling<StagedPatch[]>(() => listPatches(), 15000, { paused: streaming });
   const artifactsPoll = usePolling<ProblemArtifact[]>(() => listArtifacts(), 15000, { paused: streaming });
   const gitSourcePoll = usePolling<GitSourceStatus>(() => getGitSource(), 15000, { paused: streaming });
@@ -82,6 +91,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     testStatus: testPoll.data,
     refreshTestStatus: testPoll.refresh,
     testUpdatedAt: testPoll.updatedAt,
+    demoAppUrl: resolveDemoAppUrl(testPoll.data?.demoAppUrl, pipelinePoll.data?.healthUrl) ?? undefined,
+    demoAppName: repoDisplayName(gitSourcePoll.data?.repoUrlPreview) ?? undefined,
     staged: patchesPoll.data ?? [],
     refreshPatches: patchesPoll.refresh,
     clearPatches: async () => {

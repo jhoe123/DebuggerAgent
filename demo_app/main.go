@@ -1,14 +1,13 @@
 // Command demo_app is the "ShopFlow" storefront — the stand-in "production" service the
 // agent investigates. It is a small e-commerce app (Go API + a React/TS storefront the
-// Go server serves) deliberately seeded with a variety of production issues that surface
-// in Dynatrace via OpenTelemetry: exceptions with stack traces, slow operations, a
-// failing external dependency, intermittent failures, and CPU/memory pressure.
-//
-// The original two seeded bugs live here and are unchanged so the agent's investigate →
-// patch → test → deploy flow keeps working:
+// Go server serves) deliberately seeded with exactly two production issues that surface
+// in Dynatrace via OpenTelemetry, so patching both yields a fully stable service:
 //   - /checkout  : unbounded slice index → panic (exception recorded on the span).
 //   - /report    : per-item blocking call → high latency (slow operation).
-// The remaining scenarios live in signals.go and resources.go and are reached under /api/*.
+//
+// The agent's investigate → patch → test → deploy flow targets these two bugs. Healthy
+// baseline traffic (/api/catalog, /api/recommend) lives in signals.go; status.go serves
+// the buggy/patched self-check the storefront banner reads.
 //
 // Run (OTLP env configured — see scripts/run_demo.ps1):
 //
@@ -55,16 +54,17 @@ func main() {
 	mux.HandleFunc("/checkout", checkoutHandler)
 	mux.HandleFunc("/report", reportHandler)
 
-	// Storefront API — each endpoint triggers a specific Dynatrace signal (see
-	// signals.go / resources.go for the framing of each).
+	// Storefront API — healthy baseline traffic (see signals.go). The demo is scoped to
+	// exactly two seeded bugs (the exception on /checkout and the slow op on /report), so
+	// patching both yields a fully stable storefront.
 	mux.HandleFunc("GET /api/catalog", catalogHandler)
 	mux.HandleFunc("GET /api/recommend", recommendHandler)
-	mux.HandleFunc("GET /api/search", searchHandler)
-	mux.HandleFunc("POST /api/pay", payHandler)
-	mux.HandleFunc("GET /api/giftcard", giftcardHandler)
-	mux.HandleFunc("GET /api/flaky", flakyHandler)
-	mux.HandleFunc("GET /api/cpu", cpuHandler)
-	mux.HandleFunc("GET /api/mem", memHandler)
+
+	// Build self-check: reports whether the running binary still has the seeded bugs or
+	// has been patched (see status.go). The storefront shows this as a buggy/patched
+	// banner so a tester can tell a patch is actually live. Keep this line stable — the
+	// agent overwrites main.go on patch, so it's re-emitted from the file it reads.
+	mux.HandleFunc("GET /api/status", statusHandler)
 
 	// Serve the built storefront SPA at "/" (registered last). Degrades gracefully when
 	// the frontend isn't built so the API stays usable headless (e.g. for the pipeline).

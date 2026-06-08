@@ -29,19 +29,34 @@ export function StageTracker({
   onMerge,
   merging = false,
   showMergeButton = false,
+  demoAppUrl,
+  demoAppName,
 }: {
   artifact: ProblemArtifact;
   onMerge?: () => void;
   merging?: boolean;
   showMergeButton?: boolean;
+  demoAppUrl?: string;
+  demoAppName?: string;
 }) {
+  const deployed = artifact.overall === "deployed" || artifact.overall === "confirmed";
   return (
     <section className={`stage-tracker overall-${artifact.overall}`}>
       <div className="stage-tracker-head" style={{ display: "flex", alignItems: "center", width: "100%" }}>
         <span className="stage-overall">{OVERALL_LABEL[artifact.overall] ?? artifact.overall}</span>
-        {artifact.verify && <span className="muted" style={{ marginLeft: "10px" }}>verify: {artifact.verify}</span>}
         {artifact.fixBranch && artifact.overall !== "confirmed" && (
           <span className="muted" style={{ marginLeft: "10px" }}>branch: {artifact.fixBranch}</span>
+        )}
+        {deployed && demoAppUrl && (
+          <a
+            href={demoAppUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={{ marginLeft: "10px" }}
+            title="Open the running demo app to see the fix live"
+          >
+            Open {demoAppName ?? "the patched app"} ↗
+          </a>
         )}
         {showMergeButton && artifact.overall === "deployed" && (
           <button

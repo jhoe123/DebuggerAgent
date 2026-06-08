@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { scenarios, type Scenario } from "./scenarios";
-import { fetchCatalog, runReset, runScenario, type Product, type RunResult } from "./api";
+import { fetchBuildStatus, fetchCatalog, runReset, runScenario, type BuildVerdict, type Product, type RunResult } from "./api";
 import { ScenarioCard } from "./components/ScenarioCard";
 import { ConsolePanel, type ConsoleEntry } from "./components/ConsolePanel";
 import { ProductGrid } from "./components/ProductGrid";
+import { BuildStatus } from "./components/BuildStatus";
 import { Legend } from "./components/Legend";
 
 let seq = 0;
@@ -19,6 +20,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [entries, setEntries] = useState<ConsoleEntry[]>([]);
   const [last, setLast] = useState<Record<string, RunResult>>({});
+  const [build, setBuild] = useState<BuildVerdict | null>(null);
+  const [buildLoading, setBuildLoading] = useState(true);
 
   const loadCatalog = useCallback(async () => {
     setLoading(true);
@@ -26,9 +29,18 @@ export default function App() {
     setLoading(false);
   }, []);
 
+  // Refresh the buggy/patched verdict. Called on mount and after each action (never on a
+  // timer) so the checkout probe — the only one that emits a span — stays quiet.
+  const refreshBuild = useCallback(async () => {
+    setBuildLoading(true);
+    setBuild(await fetchBuildStatus());
+    setBuildLoading(false);
+  }, []);
+
   useEffect(() => {
     void loadCatalog();
-  }, [loadCatalog]);
+    void refreshBuild();
+  }, [loadCatalog, refreshBuild]);
 
   const record = useCallback((title: string, signals: Scenario["signals"], scenarioId: string, res: RunResult) => {
     setLast((m) => ({ ...m, [scenarioId]: res }));
@@ -55,8 +67,9 @@ export default function App() {
       const res = await runScenario(s);
       record(s.title, s.signals, s.id, res);
       if (s.id === "catalog") void loadCatalog();
+      void refreshBuild();
     },
-    [record, loadCatalog],
+    [record, loadCatalog, refreshBuild],
   );
 
   const onReset = useCallback(
@@ -69,15 +82,23 @@ export default function App() {
   );
 
   const issueCount = useMemo(() => scenarios.filter((s) => s.isIssue).length, []);
+  // Per-scenario fixed state, keyed by the bug ids the self-check reports (checkout/report).
+  const fixedById = useMemo(() => {
+    const m: Record<string, boolean> = {};
+    for (const b of build?.bugs ?? []) m[b.id] = b.fixed;
+    return m;
+  }, [build]);
 
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand">🛒 ShopFlow</div>
+        <div className="brand">🛒 {build?.app ?? "ShopFlow"}</div>
         <div className="tagline">
           a demo storefront that emits real Dynatrace signals · {issueCount} one-click issues
         </div>
       </header>
+
+      <BuildStatus verdict={build} loading={buildLoading} />
 
       <Legend />
 
@@ -97,6 +118,7 @@ export default function App() {
                   onRun={onRun}
                   onReset={s.resetEndpoint ? onReset : undefined}
                   last={last[s.id]}
+                  fixed={fixedById[s.id]}
                 />
               ))}
             </div>
