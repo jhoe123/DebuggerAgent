@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import type { Investigation, Step } from "../types";
-import { investigateStream } from "../api";
+import { investigateStream, stagePatch, unstagePatch } from "../api";
 import { useAppData } from "../context/AppDataContext";
 import { useAutopilot, isActivePhase } from "../context/AutopilotContext";
 import { useToast } from "../context/ToastContext";
@@ -37,6 +37,9 @@ export function ProblemsPage() {
     refreshTestStatus,
     setStreaming,
     artifactMap,
+    staged,
+    refreshPatches,
+    refreshArtifacts,
   } = useAppData();
   const toast = useToast();
   const { runs, cancel } = useAutopilot();
@@ -59,12 +62,28 @@ export function ProblemsPage() {
   const [kindFilter, setKindFilter] = useState<KindFilter>("all");
   const [sortBy, setSortBy] = useState<SortBy>("recent");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectMode, setSelectMode] = useState(false); // dismiss multi-select mode
   const [showHidden, setShowHidden] = useState(false);
   const [lastDismissed, setLastDismissed] = useState<string[]>([]);
 
   const selectedId = id ?? null;
   const run = selectedId ? runs[selectedId] : undefined;
   const autoActive = run ? isActivePhase(run.phase) : false;
+
+  // Batch membership: the checkbox stages/unstages (default mode). Only investigated
+  // problems (those with an artifact) can be staged.
+  const stagedIds = useMemo(() => new Set(staged.map((s) => s.problemId)), [staged]);
+  const canStage = (pid: string) => !!artifactMap[pid];
+  async function onToggleBatch(pid: string) {
+    try {
+      if (stagedIds.has(pid)) await unstagePatch(pid);
+      else await stagePatch(pid);
+      await refreshPatches();
+      await refreshArtifacts();
+    } catch (e) {
+      toast.error(`Couldn't update batch: ${String(e)}`);
+    }
+  }
 
   const activeProblems = useMemo(() => problems.filter((p) => !isDismissed(p.id)), [problems, isDismissed]);
   const hiddenProblems = useMemo(() => problems.filter((p) => isDismissed(p.id)), [problems, isDismissed]);
@@ -176,6 +195,9 @@ export function ProblemsPage() {
         Live error &amp; performance problems from Dynatrace — select one to investigate.
       </p>
 
+      {/* Consolidated patches + one-click deploy (collapsed bar; hidden until staged). */}
+      <BatchPanel />
+
       {consoleAvailable && <TestConsole onChange={refreshTestStatus} />}
 
       <div className="layout">
@@ -233,6 +255,10 @@ export function ProblemsPage() {
                     onSelect={(pid) => navigate(`/problems/${encodeURIComponent(pid)}`)}
                     artifactMap={artifactMap}
                     showHidden
+                    selectMode={selectMode}
+                    stagedIds={stagedIds}
+                    canStage={canStage}
+                    onToggleBatch={onToggleBatch}
                     selected={selected}
                     onToggleSelect={toggleSelect}
                     onDismiss={(pid) => handleDismiss([pid])}
@@ -286,22 +312,33 @@ export function ProblemsPage() {
                     <option value="impact">Most affected</option>
                   </select>
                   <button
-                    className="link-btn clear-all"
-                    onClick={() => handleDismiss(visible.map((p) => p.id))}
-                    disabled={visible.length === 0}
+                    className={`ghost-btn select-toggle clear-all${selectMode ? " active" : ""}`}
+                    onClick={() => {
+                      setSelectMode((s) => !s);
+                      setSelected(new Set());
+                    }}
+                    title="Select multiple problems to dismiss"
                   >
-                    Clear all
+                    {selectMode ? "Done" : "Select"}
                   </button>
                 </div>
 
-                {selected.size > 0 && (
+                {selectMode && (
                   <div className="bulk-bar">
                     <span>{selected.size} selected</span>
-                    <button className="link-btn" onClick={() => handleDismiss([...selected])}>
+                    <button
+                      className="link-btn"
+                      onClick={() => handleDismiss([...selected])}
+                      disabled={selected.size === 0}
+                    >
                       Dismiss selected
                     </button>
-                    <button className="link-btn" onClick={() => setSelected(new Set())}>
-                      Cancel
+                    <button
+                      className="link-btn"
+                      onClick={() => handleDismiss(visible.map((p) => p.id))}
+                      disabled={visible.length === 0}
+                    >
+                      Clear all
                     </button>
                   </div>
                 )}
@@ -323,6 +360,10 @@ export function ProblemsPage() {
                     onSelect={(pid) => navigate(`/problems/${encodeURIComponent(pid)}`)}
                     artifactMap={artifactMap}
                     showHidden={false}
+                    selectMode={selectMode}
+                    stagedIds={stagedIds}
+                    canStage={canStage}
+                    onToggleBatch={onToggleBatch}
                     selected={selected}
                     onToggleSelect={toggleSelect}
                     onDismiss={(pid) => handleDismiss([pid])}
@@ -396,9 +437,6 @@ export function ProblemsPage() {
           {result && <InvestigationPanel data={result} onApproved={reloadHistory} />}
         </main>
       </div>
-
-      {/* Consolidated patches + run-pipeline (docked; hidden until something is staged). */}
-      <BatchPanel />
     </>
   );
 }

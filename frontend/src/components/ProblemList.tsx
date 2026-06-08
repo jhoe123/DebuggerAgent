@@ -40,6 +40,10 @@ export function ProblemList({
   onSelect,
   artifactMap,
   showHidden,
+  selectMode,
+  stagedIds,
+  canStage,
+  onToggleBatch,
   selected,
   onToggleSelect,
   onDismiss,
@@ -50,6 +54,10 @@ export function ProblemList({
   onSelect: (id: string) => void;
   artifactMap: Record<string, ProblemArtifact>;
   showHidden: boolean;
+  selectMode: boolean; // true => checkbox is dismiss multi-select; false => batch membership
+  stagedIds: Set<string>;
+  canStage: (id: string) => boolean;
+  onToggleBatch: (id: string) => void;
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
   onDismiss: (id: string) => void;
@@ -57,13 +65,15 @@ export function ProblemList({
 }) {
   const { runs, cancel } = useAutopilot();
   return (
-    <div className="problem-cards">
+    <div className={`problem-cards${selectMode ? " select-mode" : ""}`}>
       {problems.map((p) => {
         const occ = p.occurrences ?? p.affectedUsers;
         const scanned = kb(p.grailScannedBytes);
         const run = runs[p.id];
         const art = artifactMap[p.id];
         const chip = art ? OVERALL_CHIP[art.overall] : null;
+        const inBatch = stagedIds.has(p.id);
+        const batchDisabled = !inBatch && !canStage(p.id); // can't stage an un-investigated problem
         return (
           <div
             key={p.id}
@@ -78,10 +88,20 @@ export function ProblemList({
                 <input
                   type="checkbox"
                   className="problem-check"
-                  checked={selected.has(p.id)}
+                  checked={selectMode ? selected.has(p.id) : inBatch}
+                  disabled={selectMode ? false : batchDisabled}
                   onClick={(e) => e.stopPropagation()}
-                  onChange={() => onToggleSelect(p.id)}
-                  aria-label={`Select ${p.title}`}
+                  onChange={() => (selectMode ? onToggleSelect(p.id) : onToggleBatch(p.id))}
+                  aria-label={selectMode ? `Select ${p.title}` : `Add ${p.title} to deployment batch`}
+                  title={
+                    selectMode
+                      ? "Select to dismiss"
+                      : batchDisabled
+                        ? "Investigate first to add to batch"
+                        : inBatch
+                          ? "In deployment batch — click to remove"
+                          : "Add to deployment batch"
+                  }
                 />
               )}
               <span className={`badge sev-${p.severity.toLowerCase()}`}>{p.severity}</span>

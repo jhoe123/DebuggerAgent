@@ -122,6 +122,8 @@ body {
 .problem-card:focus-within .problem-check,
 .problem-card:focus-within .problem-dismiss,
 .problem-check:checked { opacity: 1; }
+/* In dismiss-select mode every checkbox is visible (the point is multi-select). */
+.problem-cards.select-mode .problem-check { opacity: 1; }
 .problem-dismiss {
   background: none; border: none; color: var(--muted); cursor: pointer;
   font-size: 0.85rem; line-height: 1; padding: 0.1rem 0.3rem; border-radius: 4px;
@@ -155,9 +157,13 @@ body {
 .stage-chip.stage-pending { opacity: 0.6; }
 
 /* Batch panel: consolidated patches + run-pipeline (docked in the Problems page). */
-.batch-panel { margin-top: 1.25rem; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); padding: 1rem 1.25rem; }
-.batch-head h3 { margin: 0 0 0.2rem; }
-.batch-head .muted { margin: 0 0 0.6rem; font-size: 0.85rem; }
+.batch-panel { margin: 0 0 1.1rem; border: 1px solid var(--accent); border-radius: 12px; background: var(--panel); padding: 0.7rem 1rem; }
+.batch-bar { display: flex; align-items: center; gap: 0.6rem; }
+.batch-toggle { display: flex; align-items: center; gap: 0.45rem; background: none; border: none; color: var(--text); font-size: 0.98rem; font-weight: 600; cursor: pointer; padding: 0; }
+.batch-chevron { color: var(--muted); width: 0.9rem; text-align: center; }
+.batch-bar .run-btn { margin-left: auto; }
+.batch-body { margin-top: 0.8rem; }
+.select-toggle.active { border-color: var(--accent); color: var(--accent); }
 .batch-list { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.8rem; }
 .batch-row { border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.7rem; background: var(--panel-2); }
 .batch-row-top { display: flex; align-items: center; gap: 0.5rem; }
