@@ -107,7 +107,7 @@ func LoadConfig() Config {
 		SlackPollInterval: parseDuration(env("SLACK_POLL_INTERVAL", "60s"), 60*time.Second),
 
 		EnableGitSource:        os.Getenv("ENABLE_GIT_SOURCE") != "false", // default on; opt out with "false"
-		GitSourceRepoURL:       os.Getenv("GIT_SOURCE_REPO_URL"),
+		GitSourceRepoURL:       env("GIT_SOURCE_REPO_URL", "https://github.com/jhoe123/patchpilot-demo-app.git"),
 		GitSourceAuthToken:     os.Getenv("GIT_SOURCE_TOKEN"),
 		GitSourceWorkingBranch: env("GIT_SOURCE_WORKING_BRANCH", "main"),
 		GitSourceBranchPrefix:  env("GIT_SOURCE_BRANCH_PREFIX", "patchpilot/fix-"),

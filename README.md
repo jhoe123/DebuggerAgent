@@ -205,18 +205,20 @@ Cloud Run, deploy with
 `--min-instances=1 --max-instances=1` so the clone + branch state stay on one instance; with push
 enabled, the pushed branches on the remote are the durable record across cold starts.
 
-**Publish the demo as a Git source:** the bundled ShopFlow `demo_app` can be pushed as a standalone
-public repo and used as the source. Create an empty public repo on GitHub, then run:
+**Default / published demo source:** the bundled ShopFlow `demo_app` is published as a standalone
+public repo — **https://github.com/jhoe123/patchpilot-demo-app** — and is the **default**
+`GIT_SOURCE_REPO_URL`, so PatchPilot points at it out of the box. To republish it (or publish your
+own), create an empty public repo on GitHub and run:
 
 ```powershell
 pwsh scripts/publish_demo_repo.ps1 -RemoteUrl https://github.com/<you>/patchpilot-demo-app.git
 ```
 
-> **Tested with:** the bundled ShopFlow demo published via `scripts/publish_demo_repo.ps1`. Due to
-> limited AI/model access during development, the Git source + confirm-to-merge flow was validated
-> against **this single repository only**. Other hosts (GitLab/Bitbucket/self-hosted) and branch
-> layouts are best-effort. The merge path assumes a conflict-free `--no-ff` merge; conflicts are
-> aborted and reported for manual resolution (out of scope).
+> **Tested with:** `https://github.com/jhoe123/patchpilot-demo-app` (the published ShopFlow demo).
+> Due to limited AI/model access during development, the Git source + confirm-to-merge flow was
+> validated against **this single repository only**. Other hosts (GitLab/Bitbucket/self-hosted) and
+> branch layouts are best-effort. The merge path assumes a conflict-free `--no-ff` merge; conflicts
+> are aborted and reported for manual resolution (out of scope).
 
 ## Deploy (Cloud Run)
 
