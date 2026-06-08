@@ -16,8 +16,10 @@ type NewRun = Omit<LocalRun, "id" | "createdAt">;
 
 interface LocalStoreValue {
   // Dismissals (browser-local; problems re-appear from Dynatrace, so we hide them client-side).
+  // A dismissal is occurrence-scoped: pass the problem's latest startedAt so a NEW
+  // occurrence (re-triggered incident) resurfaces past the dismissal.
   dismissed: DismissedMap;
-  isDismissed: (id: string) => boolean;
+  isDismissed: (id: string, startedAt?: string) => boolean;
   dismiss: (ids: string[]) => void;
   restore: (ids: string[]) => void;
   clearDismissed: () => void;
@@ -36,7 +38,20 @@ export function LocalStoreProvider({ children }: { children: ReactNode }) {
   const [dismissed, setDismissed] = useState<DismissedMap>(() => loadDismissed());
   const [runs, setRuns] = useState<LocalRun[]>(() => loadRuns());
 
-  const isDismissed = useCallback((id: string) => dismissed[id] !== undefined, [dismissed]);
+  const isDismissed = useCallback(
+    (id: string, startedAt?: string) => {
+      const d = dismissed[id];
+      if (!d) return false;
+      // Problem IDs are stable composites (e.g. "error:checkout-demo"), so a re-triggered
+      // incident reuses the same ID. Treat the dismissal as stale once the problem's latest
+      // occurrence is newer than when it was dismissed, so fresh incidents reappear.
+      if (startedAt && new Date(startedAt).getTime() > new Date(d.dismissedAt).getTime()) {
+        return false;
+      }
+      return true;
+    },
+    [dismissed],
+  );
 
   const dismiss = useCallback((ids: string[]) => {
     if (ids.length === 0) return;

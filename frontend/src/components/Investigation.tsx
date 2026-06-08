@@ -6,7 +6,17 @@ import { useAppData } from "../context/AppDataContext";
 import { useToast } from "../context/ToastContext";
 import { DiffViewer } from "./DiffViewer";
 
-export function InvestigationPanel({ data, onApproved }: { data: Investigation; onApproved?: () => void }) {
+export function InvestigationPanel({
+  data,
+  onApproved,
+  onReinvestigate,
+  reinvestigating = false,
+}: {
+  data: Investigation;
+  onApproved?: () => void;
+  onReinvestigate?: () => void;
+  reinvestigating?: boolean;
+}) {
   const { rootCause, confidence, alternatives, proposedPatch, suggestedTest } = data;
   const { staged, refreshPatches, refreshArtifacts } = useAppData();
   const [busy, setBusy] = useState(false);
@@ -112,18 +122,30 @@ export function InvestigationPanel({ data, onApproved }: { data: Investigation; 
         </div>
       )}
 
-      {isStaged ? (
-        <p className="approved">
-          ✓ Staged — in the deployment batch.{" "}
-          <button className="link-btn" onClick={onUnstage} disabled={busy}>
-            Remove from batch
+      <div className="investigation-actions">
+        {isStaged ? (
+          <span className="approved">
+            ✓ Staged — in the deployment batch.{" "}
+            <button className="link-btn" onClick={onUnstage} disabled={busy || reinvestigating}>
+              Remove from batch
+            </button>
+          </span>
+        ) : (
+          <button className="approve-btn" onClick={onStage} disabled={busy || reinvestigating}>
+            {busy ? "Adding…" : "Add to batch"}
           </button>
-        </p>
-      ) : (
-        <button className="approve-btn" onClick={onStage} disabled={busy}>
-          {busy ? "Adding…" : "Add to batch"}
-        </button>
-      )}
+        )}
+        {onReinvestigate && (
+          <button
+            className="ghost-btn"
+            onClick={onReinvestigate}
+            disabled={busy || reinvestigating}
+            title="Re-run the agent to refresh the root cause and proposed fix (re-records the proposal so it can be staged)"
+          >
+            {reinvestigating ? "Re-investigating…" : "Re-investigate"}
+          </button>
+        )}
+      </div>
 
       <FollowUp problemId={data.problemId} />
     </section>

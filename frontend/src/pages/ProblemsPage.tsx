@@ -85,8 +85,8 @@ export function ProblemsPage() {
     }
   }
 
-  const activeProblems = useMemo(() => problems.filter((p) => !isDismissed(p.id)), [problems, isDismissed]);
-  const hiddenProblems = useMemo(() => problems.filter((p) => isDismissed(p.id)), [problems, isDismissed]);
+  const activeProblems = useMemo(() => problems.filter((p) => !isDismissed(p.id, p.startedAt)), [problems, isDismissed]);
+  const hiddenProblems = useMemo(() => problems.filter((p) => isDismissed(p.id, p.startedAt)), [problems, isDismissed]);
   const severities = useMemo(
     () => Array.from(new Set(activeProblems.map((p) => p.severity))),
     [activeProblems],
@@ -434,7 +434,14 @@ export function ProblemsPage() {
 
           {steps.length > 0 && <AgentSteps steps={steps} title="Agent activity" />}
 
-          {result && <InvestigationPanel data={result} onApproved={reloadHistory} />}
+          {result && (
+            <InvestigationPanel
+              data={result}
+              onApproved={reloadHistory}
+              onReinvestigate={onInvestigate}
+              reinvestigating={investigating}
+            />
+          )}
         </main>
       </div>
     </>

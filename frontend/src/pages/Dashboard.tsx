@@ -26,7 +26,7 @@ export function Dashboard() {
   }, [historyKey]);
 
   // Exclude problems the user has dismissed so the cards match the visible list.
-  const open = problems.filter((p) => !isDismissed(p.id));
+  const open = problems.filter((p) => !isDismissed(p.id, p.startedAt));
   const perf = open.filter((p) => p.kind === "performance").length;
   const errors = open.length - perf;
 
