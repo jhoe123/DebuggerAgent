@@ -5,6 +5,8 @@ import { App } from "./App";
 import { SettingsProvider } from "./context/SettingsContext";
 import { ToastProvider } from "./context/ToastContext";
 import { AppDataProvider } from "./context/AppDataContext";
+import { LocalStoreProvider } from "./context/LocalStoreContext";
+import { AutopilotProvider } from "./context/AutopilotContext";
 import "./styles.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
@@ -13,7 +15,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       <SettingsProvider>
         <ToastProvider>
           <AppDataProvider>
-            <App />
+            <LocalStoreProvider>
+              <AutopilotProvider>
+                <App />
+              </AutopilotProvider>
+            </LocalStoreProvider>
           </AppDataProvider>
         </ToastProvider>
       </SettingsProvider>

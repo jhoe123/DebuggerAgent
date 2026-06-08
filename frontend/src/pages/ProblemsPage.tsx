@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import type { Investigation, Step } from "../types";
 import { investigateStream } from "../api";
 import { useAppData } from "../context/AppDataContext";
+import { useAutopilot, isActivePhase } from "../context/AutopilotContext";
 import { useToast } from "../context/ToastContext";
 import { ProblemList } from "../components/ProblemList";
 import { InvestigationPanel } from "../components/Investigation";
@@ -28,12 +29,15 @@ export function ProblemsPage() {
     setStreaming,
   } = useAppData();
   const toast = useToast();
+  const { runs, cancel } = useAutopilot();
 
   const [result, setResult] = useState<Investigation | null>(null);
   const [steps, setSteps] = useState<Step[]>([]);
   const [investigating, setInvestigating] = useState(false);
 
   const selectedId = id ?? null;
+  const run = selectedId ? runs[selectedId] : undefined;
+  const autoActive = run ? isActivePhase(run.phase) : false;
 
   // Reset the detail view when the selected problem changes.
   useEffect(() => {
@@ -117,17 +121,41 @@ export function ProblemsPage() {
             />
           )}
 
-          {selectedId && (selectedProblem || problems.length === 0) && !result && (
-            <div className="investigate-cta">
-              <p>
-                Investigate <code>{selectedId}</code> — the agent pulls the problem from Dynatrace,
-                correlates the stack trace to source, and proposes a fix.
-              </p>
-              <button className="investigate-btn" onClick={onInvestigate} disabled={investigating}>
-                {investigating ? "Investigating…" : "Investigate with AI"}
-              </button>
-            </div>
+          {selectedId && run && (
+            <section className={`autopilot-panel ap-${run.phase}`}>
+              <div className="autopilot-panel-head">
+                <h3>
+                  Autopilot {autoActive ? "is handling this" : run.phase === "halted" ? "halted" : "result"}
+                </h3>
+                {autoActive && (
+                  <button className="halt-btn" onClick={() => selectedId && cancel(selectedId)}>
+                    Halt &amp; take over
+                  </button>
+                )}
+              </div>
+              <p className="muted">{run.message || run.phase}</p>
+              {run.steps && run.steps.length > 0 && <AgentSteps steps={run.steps} />}
+            </section>
           )}
+
+          {selectedId &&
+            (selectedProblem || problems.length === 0) &&
+            !result &&
+            !autoActive && (
+              <div className="investigate-cta">
+                <p>
+                  {run
+                    ? "Take over manually — investigate and propose a fix yourself."
+                    : "Investigate "}
+                  {!run && <code>{selectedId}</code>}
+                  {!run &&
+                    " — the agent pulls the problem from Dynatrace, correlates the stack trace to source, and proposes a fix."}
+                </p>
+                <button className="investigate-btn" onClick={onInvestigate} disabled={investigating}>
+                  {investigating ? "Investigating…" : "Investigate with AI"}
+                </button>
+              </div>
+            )}
 
           {steps.length > 0 && <AgentSteps steps={steps} title="Agent activity" />}
 

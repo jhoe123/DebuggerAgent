@@ -120,6 +120,41 @@ type HistoryResponse struct {
 	Entries []HistoryEntry `json:"entries"`
 }
 
+// AutopilotStages selects which pipeline stages the autopilot runs after a fix is
+// proposed (mirrors democtl.Options without the scenario field).
+type AutopilotStages struct {
+	Apply  bool `json:"apply"`
+	Test   bool `json:"test"`
+	Build  bool `json:"build"`
+	Deploy bool `json:"deploy"`
+}
+
+// AutopilotConfig is the live auto-patch configuration (backend is source of truth).
+type AutopilotConfig struct {
+	Enabled bool            `json:"enabled"`
+	Stages  AutopilotStages `json:"stages"`
+}
+
+// AutopilotRun is the current automation state for one problem.
+// Phase: queued | investigating | proposed | remediating | deployed | failed | halted.
+type AutopilotRun struct {
+	ProblemID string `json:"problemId"`
+	Title     string `json:"title,omitempty"`
+	Kind      string `json:"kind,omitempty"` // "error" | "performance"
+	Phase     string `json:"phase"`
+	Message   string `json:"message,omitempty"` // latest step, e.g. "testing"
+	Steps     []Step `json:"steps,omitempty"`
+	Success   *bool  `json:"success,omitempty"` // set on terminal pipeline runs
+	UpdatedAt string `json:"updatedAt"`         // RFC3339
+}
+
+// AutopilotSnapshot is the GET /api/autopilot payload (runs newest-first).
+type AutopilotSnapshot struct {
+	Config    AutopilotConfig `json:"config"`
+	Runs      []AutopilotRun  `json:"runs"`
+	LocalMode bool            `json:"localMode"` // true when apply/build/deploy is available
+}
+
 // TestStatus is the Test Console status snapshot (local only).
 type TestStatus struct {
 	SourceState  string `json:"sourceState"` // "buggy" | "modified"

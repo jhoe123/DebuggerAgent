@@ -1,4 +1,15 @@
-import type { Problem } from "../types";
+import type { AutopilotPhase, Problem } from "../types";
+import { useAutopilot, isActivePhase } from "../context/AutopilotContext";
+
+const PHASE: Record<AutopilotPhase, { label: string; icon: string }> = {
+  queued: { label: "Queued", icon: "•" },
+  investigating: { label: "Investigating", icon: "⟳" },
+  proposed: { label: "Patch proposed", icon: "✎" },
+  remediating: { label: "Auto-patching", icon: "⟳" },
+  deployed: { label: "Deployed", icon: "✓" },
+  failed: { label: "Failed", icon: "✗" },
+  halted: { label: "Halted", icon: "⛔" },
+};
 
 function sinceLabel(iso: string): string {
   const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
@@ -21,12 +32,14 @@ export function ProblemList({
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
+  const { runs, cancel } = useAutopilot();
   return (
     <aside className="problems">
       <h2>Dynatrace problems</h2>
       {problems.map((p) => {
         const occ = p.occurrences ?? p.affectedUsers;
         const scanned = kb(p.grailScannedBytes);
+        const run = runs[p.id];
         return (
           <div
             key={p.id}
@@ -44,6 +57,26 @@ export function ProblemList({
             <div className="problem-meta">
               {p.entity} · {occ.toLocaleString()} occurrences
             </div>
+            {run && (
+              <div className="autopilot-row" title={run.message}>
+                <span className={`autopilot-chip ap-${run.phase}`}>
+                  <span className={isActivePhase(run.phase) ? "ap-spin" : ""}>{PHASE[run.phase].icon}</span>{" "}
+                  {PHASE[run.phase].label}
+                </span>
+                {isActivePhase(run.phase) && (
+                  <button
+                    className="halt-btn"
+                    title="Halt automation and take over manually"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      cancel(p.id);
+                    }}
+                  >
+                    Halt
+                  </button>
+                )}
+              </div>
+            )}
             <div className="problem-chips">
               {p.kind === "performance" && (
                 <span className="mini-chip perf" title="Performance problem">⏱ perf</span>

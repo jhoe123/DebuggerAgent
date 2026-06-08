@@ -7,7 +7,6 @@ import type {
   Step,
 } from "../types";
 import { applyInstrumentation, scanInstrumentation } from "../api";
-import { useSettings } from "../context/SettingsContext";
 import { useAppData } from "../context/AppDataContext";
 import { useToast } from "../context/ToastContext";
 import { AgentSteps } from "./AgentSteps";
@@ -38,7 +37,6 @@ export function InstrumentationPanel({
   const [applying, setApplying] = useState(false);
   const [result, setResult] = useState<PipelineResult | null>(null);
 
-  const { autonomy } = useSettings();
   const { setStreaming } = useAppData();
   const toast = useToast();
 
@@ -109,7 +107,7 @@ export function InstrumentationPanel({
     try {
       const r = await applyInstrumentation(
         ids,
-        { ...autonomy },
+        { apply: true, test: true, build: true, deploy: true },
         (st) => setSteps((prev) => [...prev, st]),
       );
       setResult(r);
