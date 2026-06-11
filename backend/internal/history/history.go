@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -116,6 +117,22 @@ func (s *Store) RecordInstrumentation(res api.PipelineResult) {
 	}
 	s.Record(api.HistoryEntry{
 		Kind: "pipeline", Files: res.Files,
+		Summary: summary, Status: status, Steps: res.Steps, Verify: res.Verify,
+	})
+}
+
+// RecordRevert logs a deploy-version revert run (restore to version targetSeq).
+func (s *Store) RecordRevert(targetSeq int, res api.PipelineResult) {
+	status, verb := "failed", "failed"
+	if res.Success {
+		status, verb = "success", "succeeded"
+	}
+	summary := "Revert to v" + strconv.Itoa(targetSeq) + " " + verb
+	if res.Verify != "" {
+		summary += " (" + res.Verify + ")"
+	}
+	s.Record(api.HistoryEntry{
+		Kind: "revert", Files: res.Files,
 		Summary: summary, Status: status, Steps: res.Steps, Verify: res.Verify,
 	})
 }

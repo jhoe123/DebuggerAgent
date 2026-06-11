@@ -90,7 +90,6 @@ export function ProblemList({
                   type="checkbox"
                   className="problem-check"
                   checked={selected.has(p.id)}
-                  disabled={streaming}
                   onClick={stop}
                   onChange={() => onToggleSelect(p.id)}
                   aria-label={`Select ${p.title}`}
@@ -108,7 +107,6 @@ export function ProblemList({
                 {showHidden ? (
                   <button
                     className="problem-restore"
-                    disabled={streaming}
                     onClick={(e) => {
                       stop(e);
                       onRestore(p.id);
@@ -120,12 +118,16 @@ export function ProblemList({
                 ) : (
                   <button
                     className="problem-dismiss"
-                    disabled={streaming || !!(run && isActivePhase(run.phase))}
+                    disabled={!!(run && isActivePhase(run.phase))}
                     onClick={(e) => {
                       stop(e);
                       onDismiss(p.id);
                     }}
-                    title="Dismiss (hide) this problem"
+                    title={
+                      run && isActivePhase(run.phase)
+                        ? "Autopilot is working on this problem — halt it first to dismiss"
+                        : "Dismiss (hide) this problem"
+                    }
                     aria-label={`Dismiss ${p.title}`}
                   >
                     ✕
@@ -154,7 +156,13 @@ export function ProblemList({
                 {run && isActivePhase(run.phase) && (
                   <button
                     className="halt-btn"
-                    title="Halt automation and take over manually"
+                    title={
+                      halting.has(p.id)
+                        ? "Halting…"
+                        : streaming
+                          ? "Disabled while a live run is streaming"
+                          : "Halt automation and take over manually"
+                    }
                     disabled={halting.has(p.id) || streaming}
                     onClick={(e) => {
                       stop(e);

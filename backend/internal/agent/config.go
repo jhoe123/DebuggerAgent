@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,9 +29,14 @@ type Config struct {
 	// Set CLEAR_ISSUES_ON_START=false to show the full 30-day problem window.
 	ClearIssuesOnStart bool // CLEAR_ISSUES_ON_START
 
+	// VersionRetention caps how many deploy versions are kept for revert (oldest
+	// pruned automatically). 0 => the versions package default (20).
+	VersionRetention int // VERSION_RETENTION
+
 	// Local-only demo controls (Test Console + auto-remediation pipeline).
 	EnableTestConsole bool   // ENABLE_TEST_CONSOLE — gates demo controls; OFF in the hosted product
 	DemoAppURL        string // DEMO_APP_URL (default http://localhost:9090)
+	AppURL            string // APP_URL — public URL of the deployed app/web portal; surfaced as the "Open app" link
 
 	// Cloud-native pipeline: when PipelineMode=="cloudbuild", remediation deploys
 	// demo_app to Cloud Run via Cloud Build instead of the local democtl runner.
@@ -88,10 +94,13 @@ func LoadConfig() Config {
 		// incidents detected after startup). Opt out with "false".
 		ClearIssuesOnStart: os.Getenv("CLEAR_ISSUES_ON_START") != "false",
 
+		VersionRetention: parseInt(os.Getenv("VERSION_RETENTION"), 0),
+
 		// Default ON so the full app works locally; the hosted Cloud Run image pins
 		// ENABLE_TEST_CONSOLE=false (see Dockerfile) to stay human-gated. Opt out with "false".
 		EnableTestConsole: os.Getenv("ENABLE_TEST_CONSOLE") != "false",
 		DemoAppURL:        env("DEMO_APP_URL", "http://localhost:9090"),
+		AppURL:            os.Getenv("APP_URL"),
 
 		PipelineMode:         env("PIPELINE_MODE", "local"),
 		CloudRunRegion:       os.Getenv("CLOUD_RUN_REGION"),
@@ -123,6 +132,13 @@ func LoadConfig() Config {
 func parseDuration(s string, def time.Duration) time.Duration {
 	if d, err := time.ParseDuration(s); err == nil && d > 0 {
 		return d
+	}
+	return def
+}
+
+func parseInt(s string, def int) int {
+	if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil && n > 0 {
+		return n
 	}
 	return def
 }

@@ -127,11 +127,14 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   );
 
   const testPoll = usePolling<TestStatus>(() => testStatus(), 10000, { paused: streaming });
+  // The polls below stay live during a stream: they're cheap server-side reads, and a
+  // live artifacts feed is what makes stage chips progress while a pipeline runs.
   // Pipeline config rarely changes; poll slowly just to source the demo-app URL fallback.
-  const pipelinePoll = usePolling<PipelineSettings>(() => getPipelineConfig(), 60000, { paused: streaming });
-  const patchesPoll = usePolling<StagedPatch[]>(() => listPatches(), 15000, { paused: streaming });
-  const artifactsPoll = usePolling<ProblemArtifact[]>(() => listArtifacts(), 15000, { paused: streaming });
-  const gitSourcePoll = usePolling<GitSourceStatus>(() => getGitSource(), 15000, { paused: streaming });
+  const pipelinePoll = usePolling<PipelineSettings>(() => getPipelineConfig(), 60000);
+  const patchesPoll = usePolling<StagedPatch[]>(() => listPatches(), 15000);
+  // Artifacts poll faster while a run is streaming so per-problem stages track it live.
+  const artifactsPoll = usePolling<ProblemArtifact[]>(() => listArtifacts(), streaming ? 5000 : 15000);
+  const gitSourcePoll = usePolling<GitSourceStatus>(() => getGitSource(), 15000);
 
   const artifacts = artifactsPoll.data ?? [];
   const artifactMap = useMemo(() => {
@@ -151,7 +154,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     testStatus: testPoll.data,
     refreshTestStatus: testPoll.refresh,
     testUpdatedAt: testPoll.updatedAt,
-    demoAppUrl: resolveDemoAppUrl(testPoll.data?.demoAppUrl, pipelinePoll.data?.healthUrl) ?? undefined,
+    demoAppUrl: resolveDemoAppUrl(pipelinePoll.data?.appUrl, testPoll.data?.demoAppUrl, pipelinePoll.data?.healthUrl) ?? undefined,
     demoAppName: repoDisplayName(gitSourcePoll.data?.repoUrlPreview) ?? undefined,
     staged: patchesPoll.data ?? [],
     refreshPatches: patchesPoll.refresh,

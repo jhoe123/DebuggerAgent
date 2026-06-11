@@ -93,7 +93,7 @@ export interface PipelineResult {
 
 export interface HistoryEntry {
   id: string;
-  kind: "proposed" | "approved" | "pipeline" | "scan";
+  kind: "proposed" | "approved" | "pipeline" | "scan" | "revert";
   problemId?: string;
   files: string[];
   summary: string;
@@ -107,6 +107,35 @@ export interface HistoryEntry {
 
 export interface HistoryResponse {
   entries: HistoryEntry[];
+}
+
+// --- Deploy versions (every successful deploy is recorded; revert + redeploy) ---
+
+// One file's change inside a deploy version (display fields only).
+export interface VersionPatch {
+  file: string;
+  unifiedDiff?: string;
+  rationale?: string;
+}
+
+// One tracked deployment (GET /api/versions). Carries the cumulative patch state,
+// so reverting to it restores the source exactly as of that deploy. `patches` is
+// populated only by the detail endpoint (GET /api/versions/{id}).
+export interface DeployVersion {
+  id: string;
+  seq: number;
+  createdAt: string; // RFC3339
+  source: "manual" | "autopilot" | "revert";
+  summary: string;
+  problemIds: string[];
+  files: string[];
+  verify?: string;
+  revertOf?: string; // version id this deploy restored
+  patches?: VersionPatch[];
+}
+
+export interface VersionsResponse {
+  versions: DeployVersion[];
 }
 
 // --- Patch consolidation batch + durable per-problem status artifacts ---
@@ -230,6 +259,7 @@ export interface AutopilotSnapshot {
   config: AutopilotConfig;
   runs: AutopilotRun[];
   localMode: boolean; // true when apply/build/deploy is available
+  activeIds?: string[]; // problems in the in-flight batch (sorted)
 }
 
 export interface TriggerResult {
@@ -263,6 +293,7 @@ export interface PipelineSettings {
   deployTarget: DeployTarget;
   deployParams: Record<string, string>; // image/tag/hostPort · project/region/service/sourceBucket/artifactRepo · scriptPath
   healthUrl: string; // reachability check URL (full URL or path; defaults to the demo app URL)
+  appUrl: string; // public URL of the deployed app/web portal ("Open app" link); blank => auto-detected (local) or the health URL
   runnerAvailable?: boolean; // a remediation runner (local or cloud) is wired — Deploy is usable
 }
 

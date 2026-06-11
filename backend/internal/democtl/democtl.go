@@ -243,6 +243,24 @@ func (c *Controller) Trigger(ctx context.Context, n int) api.TriggerResult {
 	return res
 }
 
+// ResetTree restores ALL tracked files under the demo dir to their committed
+// (pristine) state — the full-tree counterpart of ResetSource, used by the deploy
+// revert so files patched in later versions are restored too. It does NOT rebuild
+// or relaunch: the revert pipeline that follows does both.
+func (c *Controller) ResetTree(ctx context.Context) error {
+	c.mu.Lock()
+	repoRoot, demoDir := c.repoRoot, c.demoDir
+	c.mu.Unlock()
+	target := "."
+	if rel, err := filepath.Rel(repoRoot, demoDir); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+		target = rel // original layout: demo_app/ inside the repo; clones use "."
+	}
+	if out, err := c.git(ctx, "checkout", "--", target); err != nil {
+		return fmt.Errorf("git checkout %s: %v: %s", target, err, out)
+	}
+	return nil
+}
+
 // ResetSource restores the committed (buggy) demo_app/main.go and restarts.
 func (c *Controller) ResetSource(ctx context.Context) error {
 	if _, err := c.git(ctx, "checkout", "--", "demo_app/main.go"); err != nil {

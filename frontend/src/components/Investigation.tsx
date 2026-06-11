@@ -34,6 +34,18 @@ export function InvestigationPanel({
   const canConfirm = !!art?.fixBranch && art.overall === "deployed";
   const isRunning = art?.overall === "running";
   const isActionDisabled = busy || reinvestigating || autoActive || isRunning || streaming;
+  // One human-readable reason for WHY actions are disabled (surfaced as tooltips).
+  const disabledReason = busy
+    ? "Busy — wait for the current action to finish"
+    : reinvestigating
+      ? "Re-investigation in progress"
+      : autoActive
+        ? "Autopilot is working this problem — halt it to take over"
+        : isRunning
+          ? "A pipeline run for this problem is in progress"
+          : streaming
+            ? "Disabled while a live run is streaming"
+            : undefined;
 
   async function onConfirm() {
     setBusy(true);
@@ -125,7 +137,12 @@ export function InvestigationPanel({
           </span>
         ) : canConfirm ? (
           <div className="confirm-fix">
-            <button className="approve-btn" onClick={onConfirm} disabled={isActionDisabled}>
+            <button
+              className="approve-btn"
+              onClick={onConfirm}
+              disabled={isActionDisabled}
+              title={disabledReason ?? "Merge the fix branch into the working branch and delete it"}
+            >
               {busy ? "Merging…" : "Confirm fixed — merge & clean up branch"}
             </button>
             <p className="muted">
@@ -136,13 +153,23 @@ export function InvestigationPanel({
           <span className="approved">
             {isRunning ? "⚙ Deploying patch..." : "✓ Staged — in the deployment batch."}{" "}
             {!isRunning && (
-              <button className="link-btn" onClick={onUnstage} disabled={isActionDisabled}>
+              <button
+                className="link-btn"
+                onClick={onUnstage}
+                disabled={isActionDisabled}
+                title={disabledReason ?? "Take this patch out of the deployment batch"}
+              >
                 Remove from batch
               </button>
             )}
           </span>
         ) : (
-          <button className="approve-btn" onClick={onStage} disabled={isActionDisabled}>
+          <button
+            className="approve-btn"
+            onClick={onStage}
+            disabled={isActionDisabled}
+            title={disabledReason ?? "Stage this patch into the deployment batch"}
+          >
             {busy ? "Adding…" : "Add to batch"}
           </button>
         )}
@@ -151,20 +178,20 @@ export function InvestigationPanel({
             className="ghost-btn"
             onClick={onReinvestigate}
             disabled={isActionDisabled}
-            title="Re-run the agent to refresh the root cause and proposed fix (re-records the proposal so it can be staged)"
+            title={disabledReason ?? "Re-run the agent to refresh the root cause and proposed fix (re-records the proposal so it can be staged)"}
           >
             {reinvestigating ? "Re-investigating…" : "Re-investigate"}
           </button>
         )}
       </div>
 
-      <FollowUp problemId={data.problemId} disabled={isActionDisabled} />
+      <FollowUp problemId={data.problemId} disabled={isActionDisabled} disabledReason={disabledReason} />
     </div>
   );
 }
 
 // Natural-language follow-up Q&A about the incident (agent may run DQL).
-function FollowUp({ problemId, disabled }: { problemId: string; disabled: boolean }) {
+function FollowUp({ problemId, disabled, disabledReason }: { problemId: string; disabled: boolean; disabledReason?: string }) {
   const [q, setQ] = useState("");
   const [thread, setThread] = useState<{ q: string; a: string }[]>([]);
   const [asking, setAsking] = useState(false);
@@ -202,8 +229,13 @@ function FollowUp({ problemId, disabled }: { problemId: string; disabled: boolea
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && onAsk()}
           disabled={asking || disabled}
+          title={disabled ? disabledReason : undefined}
         />
-        <button onClick={onAsk} disabled={asking || !q.trim() || disabled}>
+        <button
+          onClick={onAsk}
+          disabled={asking || !q.trim() || disabled}
+          title={disabled ? disabledReason : !q.trim() ? "Type a question first" : "Ask the agent about this incident"}
+        >
           {asking ? "Thinking…" : "Ask"}
         </button>
       </div>

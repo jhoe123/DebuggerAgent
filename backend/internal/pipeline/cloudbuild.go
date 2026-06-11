@@ -56,10 +56,15 @@ type CloudRunner struct {
 	genTest  democtl.TestGenFunc
 	genBuild democtl.BuildGenFunc
 
-	mu     sync.RWMutex // guards cfg (SetSourceRoot mutates it), lang and synced
+	mu     sync.RWMutex // guards cfg (SetSourceRoot mutates it), lang, synced and active*
 	cfg    Config
 	lang   lang.Profile // language profile detected from cfg.SourceRoot (re-detected on SetSourceRoot)
 	synced bool         // whether THIS process has uploaded a full base yet (see Remediate)
+
+	// In-flight build, so a halt can cancel it server-side: cancelling the Go context
+	// only stops our polling — the Cloud Build itself keeps running without this.
+	activeBuildID string
+	activeProject string
 }
 
 // New constructs a CloudRunner. It dials the Cloud Build + Storage clients with ADC
@@ -145,6 +150,28 @@ func (r *CloudRunner) markSynced() {
 	r.mu.Lock()
 	r.synced = true
 	r.mu.Unlock()
+}
+
+// setActiveBuild records (or clears, with empty args) the in-flight build so
+// CancelActive can target it.
+func (r *CloudRunner) setActiveBuild(project, buildID string) {
+	r.mu.Lock()
+	r.activeProject, r.activeBuildID = project, buildID
+	r.mu.Unlock()
+}
+
+// CancelActive cancels the in-flight Cloud Build server-side (no-op when idle).
+// The autopilot calls this on halt: cancelling the pipeline context only stops our
+// polling, while the build itself would otherwise run to completion and deploy.
+func (r *CloudRunner) CancelActive(ctx context.Context) error {
+	r.mu.RLock()
+	project, buildID := r.activeProject, r.activeBuildID
+	r.mu.RUnlock()
+	if buildID == "" {
+		return nil
+	}
+	_, err := r.cb.CancelBuild(ctx, &cloudbuildpb.CancelBuildRequest{ProjectId: project, Id: buildID})
+	return err
 }
 
 // Remediate assembles the patched source, submits a Cloud Build (test → build → deploy
@@ -265,6 +292,8 @@ func (r *CloudRunner) Remediate(ctx context.Context, opts democtl.Options, emit 
 	if err != nil {
 		return fail("build", "Cloud Build submit failed", err.Error())
 	}
+	r.setActiveBuild(eff.Project, buildID)
+	defer r.setActiveBuild("", "")
 
 	logURL, ok := r.pollBuild(ctx, eff, buildID, step)
 	if !ok {

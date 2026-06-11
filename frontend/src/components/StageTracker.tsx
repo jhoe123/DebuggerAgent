@@ -99,6 +99,11 @@ export function StageTracker({
                 onMerge?.();
               }}
               disabled={merging}
+              title={
+                merging
+                  ? "Busy — wait for the current operation to finish"
+                  : "Confirm the fix: merge its branch into the working branch"
+              }
             >
               {merging ? "Merging…" : "Merge to working branch"}
             </button>
@@ -138,6 +143,13 @@ export function StageTracker({
                   onCancel();
                 }}
                 disabled={haltingActive || streaming}
+                title={
+                  haltingActive
+                    ? "Halting…"
+                    : streaming
+                      ? "Disabled while a live run is streaming"
+                      : "Stop the autopilot on this problem and take over manually"
+                }
                 style={{ padding: "0.2rem 0.5rem", fontSize: "0.75rem" }}
               >
                 {haltingActive ? "Halting..." : "Halt & take over"}

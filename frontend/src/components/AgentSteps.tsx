@@ -21,7 +21,13 @@ export function AgentSteps({ steps, title }: { steps: Step[]; title?: string }) 
         <div key={i} className={`step step-${s.status}`}>
           <span className="step-icon">{icon(s.status)}</span>
           <span className="step-msg">{renderMsg(s.message)}</span>
-          {s.detail && <pre className="step-detail">{s.detail}</pre>}
+          {/* Failures open their detail (the extracted error) by default; info detail stays folded. */}
+          {s.detail && (
+            <details className="step-detail-toggle" open={s.status === "fail"}>
+              <summary>{s.status === "fail" ? "error detail" : "detail"}</summary>
+              <pre className="step-detail">{s.detail}</pre>
+            </details>
+          )}
         </div>
       ))}
     </div>

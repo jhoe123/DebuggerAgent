@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/patchpilot/backend/internal/agent"
@@ -28,6 +29,7 @@ import (
 	"github.com/patchpilot/backend/internal/settings"
 	"github.com/patchpilot/backend/internal/slack"
 	"github.com/patchpilot/backend/internal/tools"
+	"github.com/patchpilot/backend/internal/versions"
 )
 
 // remediator runs the apply→test→build→deploy pipeline. Implemented by the local
@@ -47,6 +49,9 @@ type handlers struct {
 	notifier *slack.Notifier    // runtime-configurable Slack digest notifier
 	pipe     *settings.Store    // runtime-configurable test/build/deploy settings + health URL
 	gs       *gitsource.Manager // managed Git source (branch-per-fix + confirm-to-merge)
+	vers     *versions.Store    // deploy versions (every successful deploy; revert targets)
+
+	revertBusy atomic.Bool // one revert at a time (it resets + redeploys the source)
 }
 
 func main() {
@@ -136,6 +141,7 @@ func main() {
 		BuildStrategy: cfg.BuildStrategy,
 		DeployTarget:  defaultDeployTarget(cfg),
 		HealthURL:     cfg.DemoAppURL,
+		AppURL:        cfg.AppURL,
 		DeployParams: map[string]string{
 			"project":      cfg.GCPProject,
 			"region":       cfg.CloudRunRegion,
@@ -150,7 +156,9 @@ func main() {
 
 	hist := history.New(200, cfg.PatchOutputDir)
 	arts := artifact.New(cfg.PatchOutputDir, cfg.ClearIssuesOnStart)
+	vers := versions.New(cfg.PatchOutputDir, cfg.VersionRetention, cfg.ClearIssuesOnStart)
 	ap := autopilot.New(svc, demo, runner, hist, arts)
+	ap.SetVersions(vers)
 
 	// Managed Git source: clone a repo, branch per fix, and merge on confirm. Re-points
 	// the read_source sandbox and (local) pipeline at the clone when connected. Mutating
@@ -199,7 +207,7 @@ func main() {
 	// Slack notifier: seeded from SLACK_WEBHOOK_URL but reconfigurable at runtime
 	// from Settings (POST /api/slack/config). Never nil.
 	notifier := slack.New(cfg.SlackWebhookURL)
-	h := &handlers{agent: svc, dt: dt, demo: demo, runner: runner, hist: hist, arts: arts, ap: ap, notifier: notifier, pipe: pipe, gs: gs}
+	h := &handlers{agent: svc, dt: dt, demo: demo, runner: runner, hist: hist, arts: arts, ap: ap, notifier: notifier, pipe: pipe, gs: gs, vers: vers}
 
 	// Auto-patch daemon: reacts to newly-detected problems (opt-in via Settings).
 	if dt != nil {
@@ -232,7 +240,10 @@ func main() {
 	mux.HandleFunc("POST /api/patches/unstage", h.unstagePatch)
 	mux.HandleFunc("POST /api/patches/clear", h.clearPatches)
 	mux.HandleFunc("GET /api/artifacts", h.artifacts)
-	mux.HandleFunc("GET /api/history", h.history)                 // audit log (hosted-safe)
+	mux.HandleFunc("GET /api/history", h.history) // audit log (hosted-safe)
+	// Deploy versions: every successful deploy is recorded; reads are hosted-safe.
+	mux.HandleFunc("GET /api/versions", h.versionsList)
+	mux.HandleFunc("GET /api/versions/{id}", h.versionDetail)
 	mux.HandleFunc("POST /api/instrument/scan", h.instrumentScan) // read-only review (hosted-safe)
 	// Autopilot: hosted-safe (propose-only without democtl; real deploy still needs local mode).
 	mux.HandleFunc("GET /api/autopilot", h.autopilotSnapshot)
@@ -266,7 +277,8 @@ func main() {
 	// Remediation runs on the local democtl runner or the cloud Cloud Build runner.
 	if h.runner != nil {
 		mux.HandleFunc("POST /api/remediate", h.remediate)
-		mux.HandleFunc("POST /api/pipeline/run", h.pipelineRun) // deploy the consolidated batch
+		mux.HandleFunc("POST /api/pipeline/run", h.pipelineRun)    // deploy the consolidated batch
+		mux.HandleFunc("POST /api/versions/revert", h.versionRevert) // restore a deploy version + redeploy
 	}
 
 	// Optional: serve the built React app (Cloud Run). Dev uses the Vite server.
@@ -474,6 +486,13 @@ func (h *handlers) remediate(w http.ResponseWriter, r *http.Request) {
 		}
 		opts.ForceSync = o.ForceSync
 	}
+	// Pre-resolve the patch set the runners would fall back to anyway, so the
+	// deploy-version record below knows exactly what shipped.
+	if len(opts.Patches) == 0 {
+		if p := h.agent.Patches().Latest(); p != nil {
+			opts.Patches = []tools.PatchProposal{*p}
+		}
+	}
 	sse, ok := newSSE(w)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
@@ -494,9 +513,14 @@ func (h *handlers) remediate(w http.ResponseWriter, r *http.Request) {
 	})
 	h.hist.RecordPipeline(req.ProblemID, result)
 	h.arts.RecordRun([]string{req.ProblemID}, result)
+	if result.Success && opts.Deploy && len(opts.Patches) > 0 {
+		scen := opts.Scenario
+		if scen == "" {
+			scen = "error"
+		}
+		h.vers.RecordDeploy("manual", []string{req.ProblemID}, []string{scen}, opts.Patches, result)
+	}
 	sse.event("result", result)
-
-
 }
 
 // --- Patch consolidation batch + durable per-problem artifacts ---
@@ -637,12 +661,108 @@ func (h *handlers) pipelineRun(w http.ResponseWriter, r *http.Request) {
 
 
 	if result.Success {
+		if opts.Deploy && len(opts.Patches) > 0 {
+			h.vers.RecordDeploy("manual", problemIDs, opts.Scenarios, opts.Patches, result)
+		}
 		// Commit each fix onto its isolated branch (push gated). Done before clearing the
 		// batch so the patched content is still available. Never merges — confirm does.
 		// Detached from r.Context() too: a refresh during the deploy mustn't skip the
 		// commit (commitFixes bounds each commit to its own 60s timeout).
 		h.commitFixes(context.WithoutCancel(r.Context()), staged)
 	}
+	sse.event("result", result)
+}
+
+// --- Deploy versions (every successful deploy; revert + redeploy) ---
+
+func (h *handlers) versionsList(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, api.VersionsResponse{Versions: h.vers.List()})
+}
+
+func (h *handlers) versionDetail(w http.ResponseWriter, r *http.Request) {
+	d, ok := h.vers.Detail(r.PathValue("id"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown version"})
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
+}
+
+// versionRevert restores a recorded deploy version and redeploys it (SSE).
+// The cumulative snapshot makes this deterministic: reset the local source to the
+// pristine base (local mode), then run the pipeline with the version's full file
+// set (ForceSync repackages pristine source + overlay in cloud mode). Autopatch is
+// paused first — otherwise it would re-detect the restored problems and promptly
+// undo the revert. A successful revert is recorded as a NEW version (append-only).
+func (h *handlers) versionRevert(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		VersionID string `json:"versionId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	v, ok := h.vers.Get(req.VersionID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown version"})
+		return
+	}
+	if snap := h.ap.Snapshot(); len(snap.ActiveIDs) > 0 {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "an autopilot batch is running — halt it (or pause autopatch) first"})
+		return
+	}
+	if !h.revertBusy.CompareAndSwap(false, true) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "a revert is already in progress"})
+		return
+	}
+	defer h.revertBusy.Store(false)
+
+	sse, okSSE := newSSE(w)
+	if !okSSE {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 25*time.Minute)
+	defer cancel()
+	stopHeartbeat := startHeartbeat(ctx, sse)
+	defer stopHeartbeat()
+
+	// Pause autopatch so the restored (likely buggy) state isn't immediately re-fixed.
+	if cfg := h.ap.Snapshot().Config; cfg.Enabled {
+		cfg.Enabled = false
+		h.ap.SetConfig(cfg)
+		sse.step(api.Step{Stage: "apply", Status: "info", Message: "Autopatch paused — resume it from the topbar when you're done."})
+	}
+
+	// Local mode: restore the WHOLE demo tree to the pristine base first, so files
+	// patched after the target version are reverted too. Cloud mode doesn't mutate
+	// its local source — ForceSync below repackages pristine source + overlay.
+	if h.demo != nil {
+		sse.step(api.Step{Stage: "apply", Status: "running", Message: "Resetting source to the pristine base…"})
+		if err := h.demo.ResetTree(ctx); err != nil {
+			res := api.PipelineResult{Success: false, Steps: []api.Step{{Stage: "apply", Status: "fail", Message: "Source reset failed", Detail: err.Error()}}}
+			sse.step(res.Steps[0])
+			h.hist.RecordRevert(v.Seq, res)
+			sse.event("result", res)
+			return
+		}
+		sse.step(api.Step{Stage: "apply", Status: "ok", Message: "Source reset to pristine base"})
+	}
+
+	ps := h.pipe.Get()
+	opts := democtl.Options{
+		Apply: true, Test: false, Build: true, Deploy: true,
+		TestStrategy:  "skip", // restoring a known-good deploy; no agent test-gen
+		BuildStrategy: ps.BuildStrategy,
+		Deployment:    democtl.DeploymentSpec{Target: ps.DeployTarget, Params: ps.DeployParams},
+		ForceSync:     true,
+		Patches:       v.Patches,
+		Scenarios:     v.Scenarios,
+	}
+	sse.step(api.Step{Stage: "apply", Status: "info", Message: fmt.Sprintf("Restoring v%d (%d file(s)) and redeploying…", v.Seq, len(v.Patches))})
+	result := h.runner.Remediate(ctx, opts, func(s api.Step) { sse.step(s) })
+	if result.Success {
+		nv := h.vers.RecordRevert(v, result)
+		sse.step(api.Step{Stage: "verify", Status: "ok", Message: fmt.Sprintf("Recorded as v%d (restores v%d)", nv.Seq, v.Seq)})
+	}
+	h.hist.RecordRevert(v.Seq, result)
 	sse.event("result", result)
 }
 

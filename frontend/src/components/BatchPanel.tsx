@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import type { DeployTarget, PipelineOptions, PipelineResult, Step } from "../types";
+import type { ArtifactStageKey, DeployTarget, PipelineOptions, PipelineResult, Step } from "../types";
 import { runPipeline, unstagePatch, getPipelineConfig } from "../api";
 import { useAppData } from "../context/AppDataContext";
 import { useToast } from "../context/ToastContext";
@@ -14,6 +14,16 @@ const OVERALL_CHIP: Record<string, { label: string; cls: string }> = {
   failed: { label: "failed ✗", cls: "status-failed" },
   confirmed: { label: "merged ✓", cls: "status-confirmed" },
 };
+
+// Pipeline subset of the lifecycle, shown per batch row so each problem's stages
+// visibly advance while a deploy runs (artifacts poll faster during a stream).
+const PIPELINE_STAGES: { key: ArtifactStageKey; label: string }[] = [
+  { key: "test", label: "Test" },
+  { key: "build", label: "Build" },
+  { key: "deploy", label: "Deploy" },
+  { key: "verify", label: "Verify" },
+];
+const STAGE_ICON: Record<string, string> = { ok: "✓", failed: "✗", running: "⟳", pending: "•" };
 
 // BatchPanel is the consolidated-patches + run-pipeline control, mounted at the top
 // of the Problems page. Collapsed by default: a slim bar with a "Deploy {N}" button
@@ -139,6 +149,7 @@ export function BatchPanel() {
               className="ghost-btn"
               onClick={clear}
               disabled={isDeploying || streaming}
+              title={isDeploying || streaming ? "Disabled while a run is in progress" : "Unstage every patch in the batch"}
               style={{ border: "1px solid var(--border)", color: "var(--text)" }}
             >
               Clear batch
@@ -147,7 +158,13 @@ export function BatchPanel() {
               className="run-btn"
               onClick={run}
               disabled={isDeploying || !canDeploy || streaming}
-              title={canDeploy ? "" : "Deploy needs the local Test Console or the cloud-build runner"}
+              title={
+                !canDeploy
+                  ? "Deploy needs the local Test Console or the cloud-build runner"
+                  : isDeploying || streaming
+                    ? "A run is already in progress"
+                    : "Apply, test, build and deploy every staged patch in one pipeline"
+              }
             >
               {isDeploying ? "Deploying…" : hasSucceeded ? `Redeploy ${n}` : `Deploy ${n}`}
             </button>
@@ -172,10 +189,28 @@ export function BatchPanel() {
                           {chip.label}
                         </span>
                       )}
-                      <button className="problem-dismiss batch-remove" title="Remove from batch" onClick={() => remove(s.problemId)} disabled={running || streaming}>
+                      <button
+                        className="problem-dismiss batch-remove"
+                        title={running || streaming ? "Disabled while a run is in progress" : "Remove from batch"}
+                        onClick={() => remove(s.problemId)}
+                        disabled={running || streaming}
+                      >
                         ✕
                       </button>
                     </div>
+                    {art?.stages && PIPELINE_STAGES.some(({ key }) => art.stages[key]) && (
+                      <div className="batch-row-stages">
+                        {PIPELINE_STAGES.map(({ key, label }) => {
+                          const st = art.stages[key];
+                          const status = st?.status ?? "pending";
+                          return (
+                            <span key={key} className={`stage-chip stage-${status}`} title={st?.detail || label}>
+                              <span className={status === "running" ? "ap-spin" : ""}>{STAGE_ICON[status] ?? "•"}</span> {label}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
                     {s.rationale && <div className="batch-row-rationale muted">{s.rationale}</div>}
                     {s.unifiedDiff && (
                       <details className="collapsible-details">

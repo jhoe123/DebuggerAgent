@@ -1,7 +1,11 @@
+import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { useAppData } from "../context/AppDataContext";
+import { useAutopilot } from "../context/AutopilotContext";
 import { useSettings } from "../context/SettingsContext";
+import { useToast } from "../context/ToastContext";
 import { agoLabel } from "../hooks/usePolling";
+import { AutomationBanner } from "../components/AutomationBanner";
 import { ToastViewport } from "../components/Toast";
 
 const NAV = [
@@ -15,11 +19,26 @@ const NAV = [
 const THEME_ICON = { light: "☀", dark: "☾", system: "◐" } as const;
 
 export function AppShell() {
-  const { mock, refreshProblems, refreshTestStatus, problemsUpdatedAt, streaming } = useAppData();
+  const { mock, refreshProblems, refreshTestStatus, problemsUpdatedAt, demoAppUrl, demoAppName } = useAppData();
+  const { available, config, activeCount, setConfig } = useAutopilot();
   const { theme, setTheme } = useSettings();
+  const toast = useToast();
+  const [togglingAuto, setTogglingAuto] = useState(false);
 
   function cycleTheme() {
     setTheme(theme === "system" ? "light" : theme === "light" ? "dark" : "system");
+  }
+
+  async function toggleAutopatch() {
+    setTogglingAuto(true);
+    try {
+      await setConfig({ ...config, enabled: !config.enabled });
+      toast.success(config.enabled ? "Autopatch paused" : "Autopatch resumed");
+    } catch (e) {
+      toast.error(`Couldn't update autopatch: ${String(e)}`);
+    } finally {
+      setTogglingAuto(false);
+    }
   }
 
   return (
@@ -53,13 +72,37 @@ export function AppShell() {
           )}
           <div className="topbar-spacer" />
           {problemsUpdatedAt && <span className="muted topbar-updated">updated {agoLabel(problemsUpdatedAt)}</span>}
+          {available && (
+            <button
+              className={`ghost-btn autopatch-pill${config.enabled ? " on" : " off"}`}
+              onClick={toggleAutopatch}
+              disabled={togglingAuto}
+              title={
+                config.enabled
+                  ? "Autopatch is ON — click to pause (halts the active batch and queued problems)"
+                  : "Autopatch is PAUSED — click to resume (open problems are picked up immediately)"
+              }
+            >
+              {config.enabled ? `● Autopatch ON${activeCount > 0 ? ` (${activeCount} active)` : ""}` : "○ Autopatch PAUSED"}
+            </button>
+          )}
+          {demoAppUrl && (
+            <a
+              className="ghost-btn"
+              href={demoAppUrl}
+              target="_blank"
+              rel="noreferrer"
+              title={`Open ${demoAppName ?? "the deployed app"} in a new tab`}
+            >
+              ↗ Open app
+            </a>
+          )}
           <button
             className="ghost-btn"
             onClick={() => {
               refreshProblems();
               refreshTestStatus();
             }}
-            disabled={streaming}
             title="Refresh data"
           >
             ↻ Refresh
@@ -73,6 +116,8 @@ export function AppShell() {
             {THEME_ICON[theme]} {theme}
           </button>
         </header>
+
+        <AutomationBanner />
 
         <main className="shell-content">
           <Outlet />

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -19,6 +21,18 @@ type Client struct {
 	env          string    // tenant base URL (for deep links)
 	baseline     time.Time // server start time — the lookback floor when clearOnStart is set
 	clearOnStart bool      // only surface problems detected after startup (CLEAR_ISSUES_ON_START)
+
+	// exec runs a DQL statement; indirection lets tests stub Grail without an MCP session.
+	exec func(ctx context.Context, dql string) ([]map[string]any, int64, error)
+
+	// Snapshot cache: /api/problems (7s poll), the autopilot tick (30s) and the Slack
+	// digest all call ListProblems; serving a short-TTL snapshot gives every consumer
+	// the same view (no flicker from re-running live queries) and cuts Grail cost.
+	// cacheMu also serializes the underlying queries (singleflight).
+	cacheMu  sync.Mutex
+	cache    []api.Problem
+	cachedAt time.Time
+	lastPerf []api.Problem // last successful perf sub-result (perf query is best-effort)
 }
 
 // Open launches the Dynatrace MCP server and initializes an MCP session.
@@ -30,7 +44,9 @@ func Open(ctx context.Context, nodeBin, dtEnvironment, dtToken string, clearOnSt
 	if err != nil {
 		return nil, fmt.Errorf("connect dynatrace mcp: %w", err)
 	}
-	return &Client{session: sess, env: dtEnvironment, baseline: time.Now(), clearOnStart: clearOnStart}, nil
+	cl := &Client{session: sess, env: dtEnvironment, baseline: time.Now(), clearOnStart: clearOnStart}
+	cl.exec = cl.executeDQLMeta
+	return cl, nil
 }
 
 func (c *Client) Close() error { return c.session.Close() }
@@ -88,17 +104,54 @@ func (c *Client) fromWindow() string {
 	return fmt.Sprintf("now()-%ds", secs)
 }
 
+// cacheTTL is how long a ListProblems snapshot is served before re-querying Grail.
+// Shorter than the autopilot tick (30s) and a small multiple of the UI poll (7s),
+// so every consumer sees the same list within a window.
+const cacheTTL = 10 * time.Second
+
+// maxStale caps how long a stale snapshot is served when the error query keeps
+// failing; past this the error propagates so callers notice the outage.
+const maxStale = 5 * time.Minute
+
 // ListProblems summarizes recent error spans AND slow operations into one problem
 // list for the UI. Each problem is tagged Kind ("error"|"performance"); its ID is a
 // composite "<kind>:<service>" so error and perf problems on the same service don't
 // collide (the server's prompt builder splits it back apart).
+//
+// Results are cached for cacheTTL and rows are aggregated per service, so the list
+// is stable across polls: one entry per <kind>:<service>, deterministic order, and
+// a transient query failure serves the last good snapshot instead of blanking.
 func (c *Client) ListProblems(ctx context.Context) ([]api.Problem, error) {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	if c.cache != nil && time.Since(c.cachedAt) < cacheTTL {
+		return append([]api.Problem(nil), c.cache...), nil
+	}
+
+	problems, err := c.listProblemsFresh(ctx)
+	if err != nil {
+		// Serve the last good snapshot on transient failure (capped) so one bad
+		// poll doesn't blank or churn every consumer's list.
+		if c.cache != nil && time.Since(c.cachedAt) < maxStale {
+			return append([]api.Problem(nil), c.cache...), nil
+		}
+		return nil, err
+	}
+	c.cache = problems
+	c.cachedAt = time.Now()
+	return append([]api.Problem(nil), problems...), nil
+}
+
+// listProblemsFresh runs the live Grail queries. Caller holds cacheMu.
+func (c *Client) listProblemsFresh(ctx context.Context) ([]api.Problem, error) {
 	from := c.fromWindow()
+	// limit 50 (not 20): rows are per {service, span, message} before aggregation,
+	// so a generous limit keeps busy services from churning at the cutoff edge.
 	errorDQL := `fetch spans, from:` + from + `
 | filter span.status_code == "error"
 | summarize count = count(), latest = max(start_time), by:{service.name, span.name, span.status_message}
 | sort latest desc
-| limit 20`
+| limit 50`
 	// Non-error spans: status_code is null for unset spans, and `!= "error"` drops
 	// nulls (null != x is null), so include nulls explicitly. The p95 threshold is
 	// applied in Go below (duration-typed p95 won't compare in DQL).
@@ -106,19 +159,58 @@ func (c *Client) ListProblems(ctx context.Context) ([]api.Problem, error) {
 | filter isNull(span.status_code) or span.status_code != "error"
 | summarize count = count(), p95 = percentile(duration, 95), latest = max(start_time), by:{service.name, span.name}
 | sort p95 desc
-| limit 20`
+| limit 50`
 
-	var problems []api.Problem
 	var scanned int64
 
-	errRecs, errScan, err := c.executeDQLMeta(ctx, errorDQL)
+	errRecs, errScan, err := c.exec(ctx, errorDQL)
 	if err != nil {
 		return nil, err
 	}
 	scanned += errScan
-	for _, r := range errRecs {
+	problems := aggregateErrorRows(errRecs, c.env)
+
+	// Performance problems are best-effort: don't fail the whole list if the perf
+	// query errors (e.g. older tenant lacking percentile()); reuse the last good
+	// perf set instead so those entries don't blink out for a few polls.
+	if perfRecs, perfScan, perfErr := c.exec(ctx, perfDQL); perfErr == nil {
+		scanned += perfScan
+		c.lastPerf = aggregatePerfRows(perfRecs, c.env)
+	}
+	problems = append(problems, c.lastPerf...)
+
+	// Stamp the shared Grail scan total on every problem (cost awareness).
+	for i := range problems {
+		problems[i].GrailScannedBytes = scanned
+	}
+	// Deterministic wire order: aggregation maps + query sorts vary poll to poll,
+	// so sort by kind then id to keep every consumer's view stable.
+	sort.Slice(problems, func(i, j int) bool {
+		if problems[i].Kind != problems[j].Kind {
+			return problems[i].Kind < problems[j].Kind
+		}
+		return problems[i].ID < problems[j].ID
+	})
+	return problems, nil
+}
+
+// aggregateErrorRows folds error rows (one per {service, span, message}) into one
+// problem per service. IDs are "error:<service>" — multiple rows per service MUST
+// collapse here or consumers see duplicate IDs whose fields flip between polls.
+// Rows arrive sorted latest-desc, so the first row per service is the newest and
+// supplies the title/entity/timestamp; counts sum across all rows.
+func aggregateErrorRows(recs []map[string]any, env string) []api.Problem {
+	var problems []api.Problem
+	idx := map[string]int{} // service -> index in problems
+	for _, r := range recs {
 		svc := str(r["service.name"])
 		count := atoi(str(r["count"]))
+		if i, ok := idx[svc]; ok {
+			problems[i].AffectedUsers += count
+			problems[i].Occurrences += count
+			continue
+		}
+		idx[svc] = len(problems)
 		problems = append(problems, api.Problem{
 			ID:            "error:" + svc,
 			Kind:          "error",
@@ -127,45 +219,50 @@ func (c *Client) ListProblems(ctx context.Context) ([]api.Problem, error) {
 			Status:        "OPEN",
 			AffectedUsers: count,
 			Occurrences:   count,
-			DynatraceURL:  c.env,
+			DynatraceURL:  env,
 			StartedAt:     str(r["latest"]),
 			Entity:        strings.TrimSpace(svc + " · " + str(r["span.name"])),
 		})
 	}
+	return problems
+}
 
-	// Performance problems are best-effort: don't fail the whole list if the perf
-	// query errors (e.g. older tenant lacking percentile()).
-	if perfRecs, perfScan, perfErr := c.executeDQLMeta(ctx, perfDQL); perfErr == nil {
-		scanned += perfScan
-		for _, r := range perfRecs {
-			p95ms := int64(atof(str(r["p95"])) / 1e6)
-			if p95ms < perfThresholdMs {
-				continue // not slow enough to flag
-			}
-			svc := str(r["service.name"])
-			count := atoi(str(r["count"]))
-			span := str(r["span.name"])
-			problems = append(problems, api.Problem{
-				ID:            "performance:" + svc,
-				Kind:          "performance",
-				Title:         "Slow operation: " + span,
-				Severity:      "RESOURCE",
-				Status:        "OPEN",
-				AffectedUsers: count,
-				Occurrences:   count,
-				Metric:        fmt.Sprintf("p95 %d ms", p95ms),
-				DynatraceURL:  c.env,
-				StartedAt:     str(r["latest"]),
-				Entity:        strings.TrimSpace(svc + " · " + span),
-			})
+// aggregatePerfRows folds slow-operation rows (one per {service, span}) into one
+// problem per service, applying the p95 threshold per row first. Rows arrive
+// sorted p95-desc, so the first qualifying row per service is the slowest and
+// supplies the title/metric/entity; counts sum across qualifying rows.
+func aggregatePerfRows(recs []map[string]any, env string) []api.Problem {
+	var problems []api.Problem
+	idx := map[string]int{} // service -> index in problems
+	for _, r := range recs {
+		p95ms := int64(atof(str(r["p95"])) / 1e6)
+		if p95ms < perfThresholdMs {
+			continue // not slow enough to flag
 		}
+		svc := str(r["service.name"])
+		count := atoi(str(r["count"]))
+		span := str(r["span.name"])
+		if i, ok := idx[svc]; ok {
+			problems[i].AffectedUsers += count
+			problems[i].Occurrences += count
+			continue
+		}
+		idx[svc] = len(problems)
+		problems = append(problems, api.Problem{
+			ID:            "performance:" + svc,
+			Kind:          "performance",
+			Title:         "Slow operation: " + span,
+			Severity:      "RESOURCE",
+			Status:        "OPEN",
+			AffectedUsers: count,
+			Occurrences:   count,
+			Metric:        fmt.Sprintf("p95 %d ms", p95ms),
+			DynatraceURL:  env,
+			StartedAt:     str(r["latest"]),
+			Entity:        strings.TrimSpace(svc + " · " + span),
+		})
 	}
-
-	// Stamp the shared Grail scan total on every problem (cost awareness).
-	for i := range problems {
-		problems[i].GrailScannedBytes = scanned
-	}
-	return problems, nil
+	return problems
 }
 
 func str(v any) string {

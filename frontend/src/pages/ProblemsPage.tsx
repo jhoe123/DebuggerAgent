@@ -242,8 +242,8 @@ export function ProblemsPage() {
                       setShowHidden((s) => !s);
                       setSelected(new Set());
                     }}
-                    disabled={streaming || (!showHidden && hiddenProblems.length === 0)}
-                    title="Show dismissed problems"
+                    disabled={!showHidden && hiddenProblems.length === 0}
+                    title={!showHidden && hiddenProblems.length === 0 ? "No dismissed problems yet" : "Show dismissed problems"}
                   >
                     {showHidden ? "← Active" : `Hidden (${hiddenProblems.length})`}
                   </button>
@@ -276,7 +276,6 @@ export function ProblemsPage() {
                         clearDismissed();
                         setLastDismissed([]);
                       }}
-                      disabled={streaming}
                     >
                       Restore all ({hiddenProblems.length})
                     </button>
@@ -309,7 +308,6 @@ export function ProblemsPage() {
                       type="search"
                       placeholder="Search problems…"
                       value={query}
-                      disabled={streaming}
                       onChange={(e) => setQuery(e.target.value)}
                     />
                     <button
@@ -318,7 +316,6 @@ export function ProblemsPage() {
                         setSelectMode((s) => !s);
                         setSelected(new Set());
                       }}
-                      disabled={streaming}
                       title="Select multiple problems to dismiss"
                     >
                       {selectMode ? "Done" : "Select"}
@@ -328,7 +325,6 @@ export function ProblemsPage() {
                     <select
                       className="filter-select"
                       value={severityFilter}
-                      disabled={streaming}
                       onChange={(e) => setSeverityFilter(e.target.value)}
                       aria-label="Filter by severity"
                     >
@@ -342,7 +338,6 @@ export function ProblemsPage() {
                     <select
                       className="filter-select"
                       value={kindFilter}
-                      disabled={streaming}
                       onChange={(e) => setKindFilter(e.target.value as KindFilter)}
                       aria-label="Filter by kind"
                     >
@@ -353,7 +348,6 @@ export function ProblemsPage() {
                     <select
                       className="filter-select"
                       value={sortBy}
-                      disabled={streaming}
                       onChange={(e) => setSortBy(e.target.value as SortBy)}
                       aria-label="Sort problems"
                     >
@@ -370,14 +364,16 @@ export function ProblemsPage() {
                     <button
                       className="link-btn"
                       onClick={() => handleDismiss([...selected])}
-                      disabled={selected.size === 0 || streaming}
+                      disabled={selected.size === 0}
+                      title={selected.size === 0 ? "Select problems first" : "Hide the selected problems from the list"}
                     >
                       Dismiss selected
                     </button>
                     <button
                       className="link-btn"
                       onClick={() => handleDismiss(visible.map((p) => p.id))}
-                      disabled={visible.length === 0 || streaming}
+                      disabled={visible.length === 0}
+                      title="Hide every problem currently listed"
                     >
                       Clear all
                     </button>
@@ -389,7 +385,7 @@ export function ProblemsPage() {
                     title="No matches"
                     message="No problems match your filters."
                     action={
-                      <button className="ghost-btn" onClick={clearFilters} disabled={streaming}>
+                      <button className="ghost-btn" onClick={clearFilters}>
                         Clear filters
                       </button>
                     }
@@ -516,7 +512,18 @@ export function ProblemsPage() {
                       ? "Take over manually — investigate and propose a fix yourself."
                       : "The agent pulls this problem from Dynatrace, correlates the stack trace to source, and proposes a fix."}
                   </p>
-                  <button className="investigate-btn" onClick={onInvestigate} disabled={investigating || streaming}>
+                  <button
+                    className="investigate-btn"
+                    onClick={onInvestigate}
+                    disabled={investigating || streaming}
+                    title={
+                      investigating
+                        ? "An investigation is already running"
+                        : streaming
+                          ? "Disabled while another live run is streaming"
+                          : "Run the AI agent against this problem"
+                    }
+                  >
                     {investigating ? "Investigating…" : run ? "Investigate manually" : "Investigate with AI"}
                   </button>
                 </div>

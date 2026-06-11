@@ -9,6 +9,7 @@ interface AutopilotValue {
   config: AutopilotConfig;
   runs: Record<string, AutopilotRun>; // keyed by problemId
   activeCount: number;
+  activeIds: string[]; // problems in the in-flight batch (pipeline running right now)
   setConfig: (cfg: AutopilotConfig) => Promise<void>;
   cancel: (problemId: string) => Promise<void>;
   refresh: () => Promise<void>;
@@ -55,6 +56,7 @@ export function AutopilotProvider({ children }: { children: ReactNode }) {
     config: snap?.config ?? DEFAULT_CONFIG,
     runs,
     activeCount: Object.values(runs).filter((r) => ACTIVE_PHASES.has(r.phase)).length,
+    activeIds: snap?.activeIds ?? [],
     setConfig,
     cancel,
     refresh: poll.refresh,

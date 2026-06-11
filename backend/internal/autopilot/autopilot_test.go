@@ -13,6 +13,7 @@ import (
 	"github.com/patchpilot/backend/internal/democtl"
 	"github.com/patchpilot/backend/internal/history"
 	"github.com/patchpilot/backend/internal/tools"
+	"github.com/patchpilot/backend/internal/versions"
 )
 
 // fakeAgent resolves each problem's investigation from a fixed table keyed by the
@@ -282,6 +283,168 @@ func TestProcessBatch_IsolatesOnBatchFailure(t *testing.T) {
 	}
 	if p := phaseOf(e, "performance:report"); p != "failed" {
 		t.Fatalf("performance:report phase = %q, want failed (fails alone)", p)
+	}
+}
+
+// cancelableDemo is a runner whose Remediate blocks until its context is cancelled,
+// and which records CancelActive calls — mirroring the cloud runner's halt path
+// (context cancel stops polling; CancelActive aborts the remote build).
+type cancelableDemo struct {
+	fakeDemo
+	started   chan struct{} // closed when Remediate begins
+	cancelled chan struct{} // closed on CancelActive
+	startOnce sync.Once
+	stopOnce  sync.Once
+}
+
+func newCancelableDemo() *cancelableDemo {
+	return &cancelableDemo{started: make(chan struct{}), cancelled: make(chan struct{})}
+}
+
+func (d *cancelableDemo) Remediate(ctx context.Context, opts democtl.Options, emit func(api.Step)) api.PipelineResult {
+	d.startOnce.Do(func() { close(d.started) })
+	<-ctx.Done()
+	return api.PipelineResult{Success: false}
+}
+
+func (d *cancelableDemo) CancelActive(ctx context.Context) error {
+	d.stopOnce.Do(func() { close(d.cancelled) })
+	return nil
+}
+
+// Halting a problem mid-pipeline must cancel the run context AND ask the runner to
+// abort its remote build; the snapshot must expose the in-flight batch while it
+// runs and clear it after.
+func TestCancel_AbortsRunnerBuildAndClearsActiveIDs(t *testing.T) {
+	ag := &fakeAgent{patches: map[string]*tools.PatchProposal{
+		"error:checkout": {File: "checkout.go", PatchedContent: "x"},
+	}}
+	demo := newCancelableDemo()
+	e := newTestEngine(ag, demo)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runBatchWith(e, "error:checkout")
+	}()
+
+	select {
+	case <-demo.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pipeline never started")
+	}
+	snap := e.Snapshot()
+	if len(snap.ActiveIDs) != 1 || snap.ActiveIDs[0] != "error:checkout" {
+		t.Fatalf("mid-batch snapshot should expose the active problem, got %v", snap.ActiveIDs)
+	}
+
+	e.Cancel("error:checkout")
+	select {
+	case <-demo.cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("halt never reached the runner's CancelActive")
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("batch never finished after cancel")
+	}
+	if p := phaseOf(e, "error:checkout"); p != "halted" {
+		t.Fatalf("phase = %q, want halted", p)
+	}
+	if got := e.Snapshot().ActiveIDs; len(got) != 0 {
+		t.Fatalf("post-batch snapshot should have no active ids, got %v", got)
+	}
+}
+
+// Disabling autopatch mid-run must also abort the runner's remote build and drain
+// queued problems to halted.
+func TestSetConfig_DisableAbortsRunnerBuild(t *testing.T) {
+	ag := &fakeAgent{patches: map[string]*tools.PatchProposal{
+		"error:checkout": {File: "checkout.go", PatchedContent: "x"},
+	}}
+	demo := newCancelableDemo()
+	e := newTestEngine(ag, demo)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runBatchWith(e, "error:checkout")
+	}()
+	select {
+	case <-demo.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pipeline never started")
+	}
+
+	cfg := e.Snapshot().Config
+	cfg.Enabled = false
+	e.SetConfig(cfg)
+	select {
+	case <-demo.cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("disable never reached the runner's CancelActive")
+	}
+	<-done
+}
+
+// A successful autopilot deploy records exactly one revertable version; a failed
+// batch records none; deploy-disabled stages record none.
+func TestRemediate_RecordsDeployVersion(t *testing.T) {
+	ag := &fakeAgent{patches: map[string]*tools.PatchProposal{
+		"error:checkout":     {File: "checkout.go", PatchedContent: "x"},
+		"performance:report": {File: "report.go", PatchedContent: "y"},
+	}}
+	demo := &fakeDemo{}
+	e := newTestEngine(ag, demo)
+	e.vers = versions.New("", 0, false)
+
+	runBatchWith(e, "error:checkout", "performance:report")
+
+	list := e.vers.List()
+	if len(list) != 1 {
+		t.Fatalf("one consolidated deploy should record one version, got %d", len(list))
+	}
+	v := list[0]
+	if v.Source != "autopilot" || len(v.ProblemIDs) != 2 || len(v.Files) != 2 {
+		t.Fatalf("unexpected version: %+v", v)
+	}
+
+	// Failed pipeline (single fix, no isolate) records nothing new.
+	ag.errs = nil
+	demo.fail = func(democtl.Options) bool { return true }
+	runBatchWith(e, "error:other")
+	if got := len(e.vers.List()); got != 1 {
+		t.Fatalf("failed run must not record a version, got %d", got)
+	}
+
+	// Deploy stage off: success without a ship records nothing.
+	demo.fail = nil
+	e.cfg.Stages.Deploy = false
+	e.skip = map[string]bool{}
+	delete(e.runs, "error:checkout")
+	runBatchWith(e, "error:checkout")
+	if got := len(e.vers.List()); got != 1 {
+		t.Fatalf("deploy-disabled run must not record a version, got %d", got)
+	}
+}
+
+// failureSummary should carry the last failing step's stage/message and a trimmed
+// detail excerpt, so terminal "failed" messages explain themselves.
+func TestFailureSummary(t *testing.T) {
+	res := api.PipelineResult{Steps: []api.Step{
+		{Stage: "test", Status: "fail", Message: "go test failed", Detail: "FAIL: TestCheckout\n" + strings.Repeat("x", 300)},
+		{Stage: "build", Status: "ok", Message: "built"},
+	}}
+	got := failureSummary(res)
+	if !strings.Contains(got, "test: go test failed") {
+		t.Errorf("summary should name the failing stage+message: %q", got)
+	}
+	if !strings.Contains(got, "FAIL: TestCheckout") || !strings.Contains(got, "…") {
+		t.Errorf("summary should carry a trimmed detail excerpt: %q", got)
+	}
+	if failureSummary(api.PipelineResult{}) != "" {
+		t.Error("no failing step should yield an empty summary")
 	}
 }
 

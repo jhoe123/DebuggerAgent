@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/patchpilot/backend/internal/gitsource"
 	"github.com/patchpilot/backend/internal/history"
 	"github.com/patchpilot/backend/internal/tools"
+	"github.com/patchpilot/backend/internal/versions"
 )
 
 // ListFunc returns the current set of problems (e.g. dynatrace.Client.ListProblems).
@@ -81,6 +83,7 @@ type Engine struct {
 	hist      *history.Store
 	arts      *artifact.Store
 	git       *gitsource.Manager // optional: commit auto-fixes to a per-problem branch
+	vers      *versions.Store    // optional: record every successful deploy as a revertable version
 	localMode bool
 
 	mu        sync.Mutex
@@ -135,6 +138,10 @@ func New(ag *agent.Service, source *democtl.Controller, runner remediator, hist 
 // SetGitSource wires the managed Git source so successful auto-fixes are committed to a
 // per-problem branch (push gated). The autopilot NEVER merges — confirmation does.
 func (e *Engine) SetGitSource(gs *gitsource.Manager) { e.git = gs }
+
+// SetVersions wires the deploy-version store so every successful autopilot deploy
+// is recorded as a revertable version.
+func (e *Engine) SetVersions(v *versions.Store) { e.vers = v }
 
 // Run starts the serial worker and the problem poller until ctx is cancelled.
 func (e *Engine) Run(ctx context.Context, interval time.Duration, list ListFunc) {
@@ -317,7 +324,7 @@ coalesce:
 
 	// Consolidated pipeline failed → isolate. A single-fix batch has nothing to isolate.
 	if len(batch) == 1 {
-		e.setPhase(batch[0].id, "failed", "Pipeline failed"+verifySuffix(res), boolPtr(false))
+		e.setPhase(batch[0].id, "failed", "Pipeline failed"+verifySuffix(res)+failureSummary(res), boolPtr(false))
 		return
 	}
 	e.isolate(parent, runCtx, batch)
@@ -361,7 +368,7 @@ func (e *Engine) isolate(parent, runCtx context.Context, patched []investigated)
 			e.commitFix(parent, fresh.id, fresh.patch)
 			e.setPhase(fresh.id, "deployed", "Fixed & deployed"+verifySuffix(r), boolPtr(true))
 		} else {
-			e.setPhase(fresh.id, "failed", "Pipeline failed"+verifySuffix(r), boolPtr(false))
+			e.setPhase(fresh.id, "failed", "Pipeline failed"+verifySuffix(r)+failureSummary(r), boolPtr(false))
 		}
 	}
 }
@@ -465,6 +472,11 @@ func (e *Engine) remediate(ctx context.Context, ids []string, patches []tools.Pa
 	})
 	e.hist.RecordPipeline(strings.Join(ids, ", "), res)
 	e.arts.RecordRun(ids, res)
+	// Track the deploy as a revertable version (Success alone isn't enough — a
+	// test/build-only run also reports Success without shipping anything).
+	if res.Success && opts.Deploy && e.vers != nil && len(patches) > 0 {
+		e.vers.RecordDeploy("autopilot", ids, scenarios, patches, res)
+	}
 	return res
 }
 
@@ -525,6 +537,7 @@ func (e *Engine) SetConfig(cfg api.AutopilotConfig) {
 	if wasEnabled && !cfg.Enabled {
 		if e.cancel != nil {
 			e.cancel()
+			e.cancelRunnerBuild()
 		}
 		for draining := true; draining; {
 			select {
@@ -556,6 +569,7 @@ func (e *Engine) Cancel(problemID string) {
 	e.skip[problemID] = true
 	if e.activeIDs[problemID] && e.cancel != nil {
 		e.cancel()
+		e.cancelRunnerBuild()
 	}
 	if r := e.runs[problemID]; r != nil && !terminal(r.Phase) {
 		r.Phase = "halted"
@@ -563,6 +577,24 @@ func (e *Engine) Cancel(problemID string) {
 		r.UpdatedAt = nowRFC()
 	}
 	e.mu.Unlock()
+}
+
+// cancelRunnerBuild asks the active runner to abort its in-flight remote build.
+// Cancelling the run context only stops our side; a submitted Cloud Build keeps
+// running server-side (and would still deploy) unless cancelled via the API. Local
+// runners don't implement CancelActive — their processes die with the context.
+func (e *Engine) cancelRunnerBuild() {
+	c, ok := e.runner.(interface{ CancelActive(context.Context) error })
+	if !ok {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := c.CancelActive(ctx); err != nil {
+			log.Printf("autopilot: cancel remote build: %v", err)
+		}
+	}()
 }
 
 // Snapshot returns the current config + runs (newest-first) + local-mode flag.
@@ -575,7 +607,12 @@ func (e *Engine) Snapshot() api.AutopilotSnapshot {
 			runs = append(runs, *r)
 		}
 	}
-	return api.AutopilotSnapshot{Config: e.cfg, Runs: runs, LocalMode: e.localMode}
+	var active []string
+	for id := range e.activeIDs {
+		active = append(active, id)
+	}
+	sort.Strings(active)
+	return api.AutopilotSnapshot{Config: e.cfg, Runs: runs, LocalMode: e.localMode, ActiveIDs: active}
 }
 
 // stagesSnapshot returns the currently-configured pipeline stages under lock.
@@ -667,6 +704,27 @@ func terminal(phase string) bool {
 func verifySuffix(res api.PipelineResult) string {
 	if res.Verify != "" {
 		return " (" + res.Verify + ")"
+	}
+	return ""
+}
+
+// failureSummary says WHY a pipeline failed from its last failing step, so the run's
+// terminal message carries the cause (stage, message, a trimmed log excerpt) instead
+// of a bare "Pipeline failed".
+func failureSummary(res api.PipelineResult) string {
+	for i := len(res.Steps) - 1; i >= 0; i-- {
+		s := res.Steps[i]
+		if s.Status != "fail" {
+			continue
+		}
+		out := " — " + s.Stage + ": " + s.Message
+		if d := strings.TrimSpace(s.Detail); d != "" {
+			if len(d) > 200 {
+				d = d[:200] + "…"
+			}
+			out += "\n" + d
+		}
+		return out
 	}
 	return ""
 }

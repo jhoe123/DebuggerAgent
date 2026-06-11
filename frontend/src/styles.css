@@ -249,6 +249,7 @@ details.collapsible-details[open] > summary {
 .select-toggle.active { border-color: var(--accent); color: var(--accent); }
 .batch-list { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.8rem; }
 .batch-row { border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.7rem; background: var(--panel-2); }
+.batch-row-stages { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.45rem; }
 .batch-row-top { display: flex; align-items: center; gap: 0.5rem; }
 .batch-row-prob { color: var(--muted); font-size: 0.8rem; }
 .batch-remove { margin-left: auto; opacity: 1; }
@@ -385,7 +386,10 @@ code { background: var(--panel-2); padding: 0.1rem 0.35rem; border-radius: 4px; 
 /* live step timeline */
 .steps { margin: 0.8rem 0; border-left: 2px solid var(--border); padding-left: 0.8rem; }
 .steps-title { margin: 0 0 0.5rem; color: var(--muted); font-size: 0.85rem; }
-.step { display: flex; align-items: baseline; gap: 0.5rem; padding: 0.2rem 0; font-size: 0.9rem; }
+.step { display: flex; align-items: baseline; gap: 0.5rem; padding: 0.2rem 0; font-size: 0.9rem; flex-wrap: wrap; }
+.step-detail-toggle { width: 100%; margin-left: 1.5rem; }
+.step-detail-toggle > summary { cursor: pointer; font-size: 0.75rem; color: var(--muted); user-select: none; }
+.step-detail-toggle[open] > summary { margin-bottom: 0.25rem; }
 .step-icon { width: 1rem; text-align: center; }
 .step-ok .step-icon { color: var(--add); }
 .step-fail { color: var(--del); }
@@ -500,6 +504,19 @@ code { background: var(--panel-2); padding: 0.1rem 0.35rem; border-radius: 4px; 
 .shell-content { padding: 1.25rem; max-width: 1080px; }
 .page-title { margin: 0 0 0.2rem; font-size: 1.3rem; }
 .page-sub { margin: 0 0 1.1rem; color: var(--muted); font-size: 0.88rem; }
+
+/* ===== Automation status banner (under the topbar) ===== */
+.automation-banner { display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem 1.25rem; font-size: 0.85rem; border-bottom: 1px solid var(--border); }
+.automation-banner.banner-working { background: color-mix(in srgb, var(--accent) 10%, var(--bg)); }
+.automation-banner.banner-paused { background: color-mix(in srgb, #e3b341 10%, var(--bg)); color: var(--muted); }
+.banner-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.banner-actions { display: flex; align-items: center; gap: 0.4rem; margin-left: auto; flex-shrink: 0; }
+.banner-actions .ghost-btn { text-decoration: none; }
+
+/* Topbar autopatch pill — the always-available pause/resume control. */
+.autopatch-pill { border-radius: 999px; white-space: nowrap; }
+.autopatch-pill.on { color: var(--add); border-color: color-mix(in srgb, var(--add) 45%, var(--border)); }
+.autopatch-pill.off { color: #e3b341; border-color: color-mix(in srgb, #e3b341 45%, var(--border)); }
 
 /* ===== Toasts ===== */
 .toast-viewport { position: fixed; right: 1rem; bottom: 1rem; display: flex; flex-direction: column; gap: 0.5rem; z-index: 50; max-width: 360px; }

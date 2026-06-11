@@ -168,6 +168,36 @@ type HistoryResponse struct {
 	Entries []HistoryEntry `json:"entries"`
 }
 
+// VersionPatch is one file's change inside a deploy version — display fields only
+// (the full patched content stays server-side).
+type VersionPatch struct {
+	File        string `json:"file"`
+	UnifiedDiff string `json:"unifiedDiff,omitempty"`
+	Rationale   string `json:"rationale,omitempty"`
+}
+
+// DeployVersion is one tracked deployment (GET /api/versions). Every successful
+// deploy records a version carrying the CUMULATIVE patch state, so reverting to it
+// restores the source exactly as of that deploy. Patches is populated only by the
+// detail endpoint (GET /api/versions/{id}) to keep the list payload lean.
+type DeployVersion struct {
+	ID         string         `json:"id"`
+	Seq        int            `json:"seq"`
+	CreatedAt  string         `json:"createdAt"`          // RFC3339
+	Source     string         `json:"source"`             // "manual" | "autopilot" | "revert"
+	Summary    string         `json:"summary"`            // short human-readable line
+	ProblemIDs []string       `json:"problemIds"`         // problems fixed in the run that created this version
+	Files      []string       `json:"files"`              // cumulative set of modified files
+	Verify     string         `json:"verify,omitempty"`   // pipeline verify note
+	RevertOf   string         `json:"revertOf,omitempty"` // version id this deploy restored
+	Patches    []VersionPatch `json:"patches,omitempty"`  // detail endpoint only
+}
+
+// VersionsResponse is the GET /api/versions payload (newest first).
+type VersionsResponse struct {
+	Versions []DeployVersion `json:"versions"`
+}
+
 // AutopilotStages selects which pipeline stages the autopilot runs after a fix is
 // proposed (mirrors democtl.Options without the scenario field).
 type AutopilotStages struct {
@@ -200,7 +230,8 @@ type AutopilotRun struct {
 type AutopilotSnapshot struct {
 	Config    AutopilotConfig `json:"config"`
 	Runs      []AutopilotRun  `json:"runs"`
-	LocalMode bool            `json:"localMode"` // true when apply/build/deploy is available
+	LocalMode bool            `json:"localMode"`           // true when apply/build/deploy is available
+	ActiveIDs []string        `json:"activeIds,omitempty"` // problems in the in-flight batch (sorted)
 }
 
 // TestStatus is the Test Console status snapshot (local only).
@@ -248,6 +279,7 @@ type PipelineSettings struct {
 	DeployTarget  string            `json:"deployTarget"`  // local | docker | script | cloud-run
 	DeployParams  map[string]string `json:"deployParams"`  // image/tag/hostPort · project/region/service/sourceBucket/artifactRepo · scriptPath
 	HealthURL     string            `json:"healthUrl"`     // reachability check URL (full URL or path; defaults to the demo app URL)
+	AppURL        string            `json:"appUrl"`        // public URL of the deployed app/web portal, surfaced as the "Open app" link; blank => auto-detected (local) or the health URL
 
 	// RunnerAvailable reports whether a remediation runner (local democtl or the cloud
 	// build runner) is wired, so the UI can enable Deploy without depending on the Test

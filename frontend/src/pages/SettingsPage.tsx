@@ -470,10 +470,24 @@ export function SettingsPage() {
               </section>
 
               <section className="settings-card">
-                <h3>Health check</h3>
+                <h3>App link &amp; health check</h3>
                 <p className="muted">
-                  URL pinged to confirm the demo app is reachable (drives the demo badge in Problems &amp;
-                  Status). A full URL or a path on the demo app — leave blank to use its base URL.
+                  <strong>App URL</strong> is the public address of the deployed app, surfaced as the “Open app”
+                  link in the header and after a deploy. Leave blank to auto-detect (local Test Console) or fall
+                  back to the health URL below.
+                </p>
+                <label className="pipe-field">
+                  <span>App URL</span>
+                  <input
+                    value={pipe.appUrl ?? ""}
+                    placeholder="https://your-app.example.com"
+                    disabled={pipeBusy}
+                    onChange={(e) => setPipe({ ...pipe, appUrl: e.target.value })}
+                  />
+                </label>
+                <p className="muted">
+                  <strong>Health check URL</strong> is pinged to confirm the app is reachable (drives the demo
+                  badge in Problems &amp; Status). A full URL or a path on the app — leave blank to use its base URL.
                 </p>
                 <label className="pipe-field">
                   <span>Health check URL</span>
@@ -491,7 +505,7 @@ export function SettingsPage() {
                     </span>
                   )}
                   <button className="primary-btn" disabled={pipeBusy} onClick={savePipe}>
-                    {pipeBusy ? "Saving…" : "Save health check"}
+                    {pipeBusy ? "Saving…" : "Save app & health"}
                   </button>
                 </div>
               </section>

@@ -8,6 +8,7 @@ import type {
   AutopilotConfig,
   AutopilotSnapshot,
   ConfirmFixResult,
+  DeployVersion,
   GitSourceConfig,
   GitSourceStatus,
   GitValidateResult,
@@ -27,6 +28,7 @@ import type {
   Step,
   TestStatus,
   TriggerResult,
+  VersionsResponse,
 } from "./types";
 import { mockInvestigation, mockProblems, mockScan } from "./mock";
 
@@ -162,6 +164,32 @@ export async function listArtifacts(): Promise<ProblemArtifact[]> {
   }
 }
 
+// --- Deploy versions (every successful deploy is recorded; revert + redeploy) ---
+
+// listVersions returns all tracked deploy versions, newest first (empty on error).
+export async function listVersions(): Promise<DeployVersion[]> {
+  try {
+    return (await real<VersionsResponse>("/api/versions")).versions ?? [];
+  } catch {
+    return [];
+  }
+}
+
+// getVersion returns one version with its per-file diffs for display.
+export async function getVersion(id: string): Promise<DeployVersion> {
+  return real<DeployVersion>(`/api/versions/${encodeURIComponent(id)}`);
+}
+
+// revertVersion restores a deploy version and redeploys it, streaming the pipeline
+// steps. Resolves with the terminal result; throws with the server's reason on
+// conflict (e.g. an autopilot batch is running).
+export async function revertVersion(
+  versionId: string,
+  onStep: (s: Step) => void,
+): Promise<PipelineResult> {
+  return consumeSSE<PipelineResult>("/api/versions/revert", { versionId }, onStep);
+}
+
 // runPipeline applies the staged batch then streams test→build→deploy→verify once.
 export async function runPipeline(
   options: PipelineOptions,
@@ -228,11 +256,12 @@ export async function setPipelineConfig(s: PipelineSettings): Promise<PipelineSe
 }
 
 // resolveDemoAppUrl picks the best ShopFlow (demo app) URL to link testers to after a
-// deploy: the Test Console's demoAppUrl when local mode is mounted, else the pipeline
-// health URL. Returns the origin (drops any path like /healthz) or null when neither is an
-// absolute http(s) URL — so callers can hide the link rather than build a broken href.
-export function resolveDemoAppUrl(demoAppUrl?: string, healthUrl?: string): string | null {
-  for (const candidate of [demoAppUrl, healthUrl]) {
+// deploy, in priority order: an explicitly configured appUrl, the Test Console's demoAppUrl
+// when local mode is mounted, else the pipeline health URL. Returns the origin (drops any
+// path like /healthz) or null when none is an absolute http(s) URL — so callers can hide the
+// link rather than build a broken href.
+export function resolveDemoAppUrl(appUrl?: string, demoAppUrl?: string, healthUrl?: string): string | null {
+  for (const candidate of [appUrl, demoAppUrl, healthUrl]) {
     if (!candidate) continue;
     try {
       const u = new URL(candidate);
@@ -311,7 +340,17 @@ async function consumeSSE<T>(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok || !res.body) throw new Error(`${path} -> ${res.status}`);
+  if (!res.ok || !res.body) {
+    // Pre-stream rejections (404/409) arrive as JSON — surface the reason.
+    let msg = `${path} -> ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j?.error) msg = j.error;
+    } catch {
+      /* not JSON — keep the status message */
+    }
+    throw new Error(msg);
+  }
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";

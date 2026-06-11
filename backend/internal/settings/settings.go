@@ -52,6 +52,9 @@ func (st *Store) Set(in api.PipelineSettings) api.PipelineSettings {
 	if v := strings.TrimSpace(in.HealthURL); v != "" {
 		st.s.HealthURL = v
 	}
+	if v := strings.TrimSpace(in.AppURL); v != "" {
+		st.s.AppURL = v
+	}
 	for k, v := range in.DeployParams {
 		if st.s.DeployParams == nil {
 			st.s.DeployParams = map[string]string{}
