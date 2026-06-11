@@ -92,6 +92,22 @@ func (p *PatchStore) Clear() {
 	p.mu.Unlock()
 }
 
+// Reset clears the pending proposal, all per-problem proposals (including their
+// on-disk mirror under <outDir>/proposed — otherwise they rehydrate on restart),
+// and the staged batch. Used when the Git source is re-targeted: every proposal
+// references files of the old repository. Approved-patch files already written
+// under outDir stay (historical artifacts).
+func (p *PatchStore) Reset() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.latest = nil
+	p.proposed = map[string]PatchProposal{}
+	p.staged = map[string]StagedPatch{}
+	if dir := p.proposedDir(); dir != "" {
+		_ = os.RemoveAll(dir)
+	}
+}
+
 // SetProposed records the proposal produced when investigating a specific problem,
 // so it can be staged later regardless of which problem was investigated most
 // recently (the volatile `latest` is overwritten by every investigation).

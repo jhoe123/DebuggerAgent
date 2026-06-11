@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/patchpilot/backend/internal/api"
@@ -108,6 +109,152 @@ func TestBranchPerFixLifecycle(t *testing.T) {
 			t.Fatalf("artifact not marked confirmed: %+v", a)
 		}
 	}
+}
+
+func TestCanonRepoURL(t *testing.T) {
+	same := [][2]string{
+		{"https://github.com/Org/Repo.git", "https://github.com/org/repo"},
+		{"https://user:tok@github.com/o/r.git", "https://github.com/o/r"},
+		{"https://github.com/o/r/", "https://github.com/o/r"},
+		{`C:\work\repo.git`, "c:/work/repo"},
+	}
+	for _, c := range same {
+		if !sameRepoURL(c[0], c[1]) {
+			t.Errorf("sameRepoURL(%q, %q) = false, want true", c[0], c[1])
+		}
+	}
+	if sameRepoURL("https://github.com/o/r", "https://github.com/o/r2") {
+		t.Error("different repos must not compare equal")
+	}
+}
+
+// TargetChange must mirror Store.Set's "empty keeps existing" semantics, ignore the
+// masked-preview round trip, and report nothing when no clone exists on disk.
+func TestTargetChange(t *testing.T) {
+	clone := filepath.Join(t.TempDir(), "clone")
+	st := New(Config{RepoURL: "https://u:tok@github.com/o/r.git", WorkingBranch: "main", CloneDir: clone})
+	m := NewManager(st, nil, true, nil)
+
+	if r, b := m.TargetChange(api.GitSourceConfig{RepoURL: "https://github.com/other/x"}); r || b {
+		t.Fatalf("no clone on disk must report no change, got repo=%v branch=%v", r, b)
+	}
+	// Fabricate a clone — isGitRepo only checks for a .git entry.
+	if err := os.MkdirAll(filepath.Join(clone, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if r, b := m.TargetChange(api.GitSourceConfig{RepoURL: "https://github.com/o/r", WorkingBranch: "main"}); r || b {
+		t.Fatalf("masked-preview round trip must not read as a change, got repo=%v branch=%v", r, b)
+	}
+	if r, b := m.TargetChange(api.GitSourceConfig{}); r || b {
+		t.Fatalf("empty fields keep existing values, got repo=%v branch=%v", r, b)
+	}
+	if r, _ := m.TargetChange(api.GitSourceConfig{RepoURL: "https://github.com/other/x"}); !r {
+		t.Fatal("new repo URL must report repoChanged")
+	}
+	if _, b := m.TargetChange(api.GitSourceConfig{WorkingBranch: "develop"}); !b {
+		t.Fatal("new working branch must report branchChanged")
+	}
+}
+
+// Re-targeting the config and reconnecting must wipe a clone whose origin points at
+// the OLD repository (never fetch into it) and emit a visible "clean" step.
+func TestConnect_WipesOnOriginMismatch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	ctx := context.Background()
+	originA := seedBareOrigin(t, "a.txt", "A")
+	originB := seedBareOrigin(t, "b.txt", "B")
+	clone := filepath.Join(t.TempDir(), "clone")
+	st := New(Config{RepoURL: originA, WorkingBranch: "main", CloneDir: clone})
+	m := NewManager(st, nil, true, nil)
+	if _, err := m.Connect(ctx, nil); err != nil {
+		t.Fatalf("connect A: %v", err)
+	}
+	marker := filepath.Join(clone, "marker.txt")
+	if err := os.WriteFile(marker, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st.Set(api.GitSourceConfig{RepoURL: originB})
+	var stages []string
+	if _, err := m.Connect(ctx, func(s api.Step) { stages = append(stages, s.Stage) }); err != nil {
+		t.Fatalf("connect B: %v", err)
+	}
+	cleaned := false
+	for _, s := range stages {
+		if s == "clean" {
+			cleaned = true
+		}
+	}
+	if !cleaned {
+		t.Fatalf("expected a clean step in the timeline, got %v", stages)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("old workspace file survived the wipe")
+	}
+	out, err := m.runGit(ctx, clone, false, "remote", "get-url", "origin")
+	if err != nil || !sameRepoURL(strings.TrimSpace(out), originB) {
+		t.Fatalf("origin = %q, want %q", strings.TrimSpace(out), originB)
+	}
+	if _, err := os.Stat(filepath.Join(clone, "b.txt")); err != nil {
+		t.Fatal("new repo content missing after re-clone")
+	}
+	if !m.IsConnected() {
+		t.Fatal("not connected after re-target")
+	}
+}
+
+// ResetWorkspace must delete the clone and disconnect; a fresh Connect then re-clones.
+func TestResetWorkspace(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	ctx := context.Background()
+	origin := seedBareOrigin(t, "a.txt", "A")
+	clone := filepath.Join(t.TempDir(), "clone")
+	st := New(Config{RepoURL: origin, WorkingBranch: "main", CloneDir: clone})
+	m := NewManager(st, nil, true, nil)
+	if _, err := m.Connect(ctx, nil); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	if err := m.ResetWorkspace(); err != nil {
+		t.Fatalf("reset workspace: %v", err)
+	}
+	if _, err := os.Stat(clone); !os.IsNotExist(err) {
+		t.Fatal("clone dir still on disk after reset")
+	}
+	if m.IsConnected() {
+		t.Fatal("still connected after reset")
+	}
+	if len(m.Status(ctx).Branches) != 0 {
+		t.Fatal("branch map must be empty after reset")
+	}
+
+	if _, err := m.Connect(ctx, nil); err != nil {
+		t.Fatalf("fresh connect after reset: %v", err)
+	}
+	if !m.IsConnected() {
+		t.Fatal("fresh connect did not reconnect")
+	}
+}
+
+// seedBareOrigin creates a bare origin repo seeded with one commit (file=content)
+// on main and returns its path.
+func seedBareOrigin(t *testing.T, file, content string) string {
+	t.Helper()
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	runGitT(t, "", "init", "--bare", "-b", "main", origin)
+	seed := filepath.Join(t.TempDir(), "seed")
+	runGitT(t, "", "clone", origin, seed)
+	if err := os.WriteFile(filepath.Join(seed, file), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, seed, "-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+	runGitT(t, seed, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "seed")
+	runGitT(t, seed, "push", "origin", "main")
+	return origin
 }
 
 func runGitT(t *testing.T, dir string, args ...string) {

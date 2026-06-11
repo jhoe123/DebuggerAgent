@@ -62,6 +62,29 @@ function statusToConfig(s: GitSourceStatus): GitSourceConfig {
   };
 }
 
+// normRepoUrl mirrors the backend's canonRepoURL: embedded userinfo stripped,
+// backslashes normalized, trailing "/" and ".git" trimmed, lowercased — so the
+// masked preview the form is seeded with never reads as a different repository.
+function normRepoUrl(u: string): string {
+  let s = u.trim().replace(/\\/g, "/");
+  const i = s.indexOf("://");
+  if (i >= 0) {
+    const at = s.lastIndexOf("@");
+    if (at > i) s = s.slice(0, i + 3) + s.slice(at + 1);
+  }
+  return s.replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
+}
+
+// swapKindOf detects a destructive re-target BEFORE applying: the form points at a
+// different repository or working branch than the currently connected one. Applying
+// such a change stops in-flight automation and (repo change) replaces the workspace.
+function swapKindOf(form: GitSourceConfig, status: GitSourceStatus): { repo: boolean; branch: boolean } | null {
+  if (!status.connected) return null;
+  const repo = !!form.repoUrl.trim() && normRepoUrl(form.repoUrl) !== normRepoUrl(status.repoUrlPreview ?? "");
+  const branch = !!form.workingBranch.trim() && form.workingBranch !== status.workingBranch;
+  return repo || branch ? { repo, branch } : null;
+}
+
 // Human-friendly labels for the strategy / target selects (values match the backend).
 const TEST_STRATEGY_LABELS: Record<TestStrategy, string> = {
   auto: "auto — reuse or generate",
@@ -102,7 +125,7 @@ const PARAM_LABELS: Record<string, string> = {
 export function SettingsPage() {
   const { theme, setTheme, backendUrl, setBackendUrl } = useSettings();
   const { consoleAvailable, mock, testStatus } = useAppData();
-  const { config, setConfig, localMode } = useAutopilot();
+  const { config, setConfig, localMode, activeCount } = useAutopilot();
   const toast = useToast();
   const [tab, setTab] = useState<TabKey>("general");
   const [url, setUrl] = useState(backendUrl);
@@ -120,6 +143,15 @@ export function SettingsPage() {
   const [gitSteps, setGitSteps] = useState<Step[]>([]);
   const [gitError, setGitError] = useState("");
   const [showAdv, setShowAdv] = useState(false);
+  const [confirmSwap, setConfirmSwap] = useState(false);
+
+  // A destructive re-target awaiting confirmation (different repo/branch than connected).
+  const gitSwap = git && gitForm ? swapKindOf(gitForm, git) : null;
+
+  // Any edit to the form invalidates a pending replace confirmation.
+  useEffect(() => {
+    setConfirmSwap(false);
+  }, [gitForm]);
 
   useEffect(() => {
     getSlack()
@@ -221,15 +253,30 @@ export function SettingsPage() {
   }
 
   // Step 2: persist the config, then (when writes are enabled) clone/fetch with a live
-  // step timeline. Surfaces validation/clone issues inline.
+  // step timeline. Surfaces validation/clone issues inline. Re-targeting the repo or
+  // working branch is destructive (stops runs, replaces the workspace) — it must be
+  // confirmed via the warning panel first.
   async function applyGit() {
     if (!gitForm) return;
+    if (gitSwap && !confirmSwap) {
+      setConfirmSwap(true); // show the replace warning; its danger button re-invokes applyGit
+      return;
+    }
+    setConfirmSwap(false);
     setGitBusy(true);
     setGitError("");
     setGitSteps([]);
     try {
       const saved = await setGitSourceConfig({ ...gitForm, authToken: gitTok.trim() || undefined });
       setGit(saved);
+      if (saved.targetChanged) {
+        const parts = [
+          saved.haltedRuns ? `${saved.haltedRuns} in-flight run${saved.haltedRuns === 1 ? "" : "s"} halted` : "",
+          saved.workspaceReset ? "old workspace removed" : "",
+          saved.patchesCleared ? "pending patches cleared" : "",
+        ].filter(Boolean);
+        toast.info(`Previous target replaced${parts.length ? " — " + parts.join(", ") : ""}`);
+      }
       if (gitTok) setGitTok("");
       if (!saved.enabled) {
         setGitForm(statusToConfig(saved));
@@ -778,24 +825,48 @@ export function SettingsPage() {
                   Saves the settings above and {git?.enabled ? "clones the repository" : "stores them"} —
                   cloning streams its progress below.
                 </p>
-                <div className="pipe-actions" style={{ marginTop: 0 }}>
-                  <button
-                    className="primary-btn"
-                    disabled={
-                      gitBusy ||
-                      !gitForm.repoUrl.trim() ||
-                      !gitForm.workingBranch.trim() ||
-                      !(gitVal.status === "valid" || git?.connected)
-                    }
-                    onClick={applyGit}
-                    title={gitVal.status === "valid" || git?.connected ? "" : "Validate the repository first"}
-                  >
-                    {gitBusy ? "Applying…" : git?.enabled ? "Apply changes & clone" : "Save settings"}
-                  </button>
-                  {!git?.enabled && (
-                    <span className="chip chip-info">read-only — set ENABLE_GIT_SOURCE=true to clone</span>
-                  )}
-                </div>
+                {confirmSwap && gitSwap ? (
+                  <div className="git-swap-warning" role="alert">
+                    <strong>Replace the connected project?</strong>
+                    <p>
+                      Applying will stop{" "}
+                      {activeCount > 0
+                        ? `${activeCount} active autopilot run${activeCount === 1 ? "" : "s"}`
+                        : "any in-flight automation"}
+                      , clear pending patch proposals, and{" "}
+                      {gitSwap.repo
+                        ? "delete the current workspace clone — unconfirmed local fix branches are lost."
+                        : `switch the working branch to ${gitForm.workingBranch}.`}
+                    </p>
+                    <div className="pipe-actions" style={{ marginTop: 0 }}>
+                      <button className="danger-btn" disabled={gitBusy} onClick={applyGit}>
+                        {gitBusy ? "Replacing…" : "Stop runs & replace"}
+                      </button>
+                      <button className="seg-btn" disabled={gitBusy} onClick={() => setConfirmSwap(false)}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="pipe-actions" style={{ marginTop: 0 }}>
+                    <button
+                      className="primary-btn"
+                      disabled={
+                        gitBusy ||
+                        !gitForm.repoUrl.trim() ||
+                        !gitForm.workingBranch.trim() ||
+                        !(gitVal.status === "valid" || git?.connected)
+                      }
+                      onClick={applyGit}
+                      title={gitVal.status === "valid" || git?.connected ? "" : "Validate the repository first"}
+                    >
+                      {gitBusy ? "Applying…" : git?.enabled ? "Apply changes & clone" : "Save settings"}
+                    </button>
+                    {!git?.enabled && (
+                      <span className="chip chip-info">read-only — set ENABLE_GIT_SOURCE=true to clone</span>
+                    )}
+                  </div>
+                )}
 
                 {gitError && (
                   <div className="git-status-row">

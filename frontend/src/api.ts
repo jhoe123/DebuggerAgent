@@ -8,7 +8,9 @@ import type {
   AutopilotConfig,
   AutopilotSnapshot,
   ConfirmFixResult,
+  DemoResetResult,
   DeployVersion,
+  GitSourceApplyResult,
   GitSourceConfig,
   GitSourceStatus,
   GitValidateResult,
@@ -210,6 +212,14 @@ export async function testReset(): Promise<TestStatus> {
   return real<TestStatus>("/api/test/reset", { method: "POST" });
 }
 
+// resetDemo is the judge-facing "reset testing" action: the backend stops all in-flight
+// automation, clears patches + lifecycle artifacts, and restores the original (buggy)
+// demo source — re-cloning the configured repository when the Git source is in use.
+// Slow (a fresh clone); callers should show a busy state.
+export async function resetDemo(): Promise<DemoResetResult> {
+  return real<DemoResetResult>("/api/demo/reset", { method: "POST" });
+}
+
 // --- Autopilot (auto-patch daemon) — always available; propose-only when local mode is off ---
 
 export async function getAutopilot(): Promise<AutopilotSnapshot> {
@@ -289,8 +299,11 @@ export function repoDisplayName(repoUrl?: string): string | null {
 export async function getGitSource(): Promise<GitSourceStatus> {
   return real<GitSourceStatus>("/api/git-source");
 }
-export async function setGitSourceConfig(config: GitSourceConfig): Promise<GitSourceStatus> {
-  return real<GitSourceStatus>("/api/git-source/config", {
+// setGitSourceConfig merges the config server-side. When the update re-targets the
+// repo or working branch, the response also reports what in-flight work was stopped
+// and whether the old workspace clone was removed.
+export async function setGitSourceConfig(config: GitSourceConfig): Promise<GitSourceApplyResult> {
+  return real<GitSourceApplyResult>("/api/git-source/config", {
     method: "POST",
     body: JSON.stringify(config),
   });

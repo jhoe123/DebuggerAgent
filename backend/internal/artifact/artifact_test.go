@@ -76,6 +76,24 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	}
 }
 
+// Reset (the judge-facing demo reset) must clear memory AND the on-disk mirror —
+// a fresh store over the same dir must reload nothing.
+func TestStoreReset(t *testing.T) {
+	dir := t.TempDir()
+	s := New(dir, false)
+	s.RecordInvestigation("error:checkout", "Panic", "error", true, "fix")
+	s.RecordStaged("error:checkout", "", "")
+
+	s.Reset()
+	if len(s.List()) != 0 {
+		t.Fatalf("expected 0 artifacts after Reset, got %d", len(s.List()))
+	}
+	s2 := New(dir, false)
+	if len(s2.List()) != 0 {
+		t.Fatalf("on-disk mirror must be gone — fresh store reloaded %d artifacts", len(s2.List()))
+	}
+}
+
 func TestClearOnStart(t *testing.T) {
 	dir := t.TempDir()
 	s := New(dir, false)

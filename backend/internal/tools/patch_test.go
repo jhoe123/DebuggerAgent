@@ -134,6 +134,42 @@ func TestStagedForApplyDedupesByFile(t *testing.T) {
 	}
 }
 
+// Reset (a Git source target swap) must drop the pending proposal, the per-problem
+// proposals AND their on-disk mirror — a new store over the same outDir (a restart)
+// must rehydrate nothing — and the staged batch.
+func TestPatchStoreReset(t *testing.T) {
+	srcRoot := t.TempDir()
+	outDir := t.TempDir()
+	sb, err := NewSandbox(srcRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPatchStore(sb, outDir)
+	if err := store.Propose(PatchProposal{File: "main.go", PatchedContent: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	store.SetProposed("error:a", &PatchProposal{File: "main.go", PatchedContent: "x"})
+	if _, err := store.Stage("error:a"); err != nil {
+		t.Fatal(err)
+	}
+
+	store.Reset()
+
+	if store.Latest() != nil {
+		t.Error("pending proposal must be cleared")
+	}
+	if got := store.Staged(); len(got) != 0 {
+		t.Errorf("staged batch must be empty, got %+v", got)
+	}
+	if _, err := store.Stage("error:a"); err == nil {
+		t.Error("per-problem proposal must be gone after Reset")
+	}
+	restarted := NewPatchStore(sb, outDir)
+	if _, err := restarted.Stage("error:a"); err == nil {
+		t.Error("on-disk proposal mirror must be deleted — restart rehydrated a stale proposal")
+	}
+}
+
 func TestUnstageAndClearStaged(t *testing.T) {
 	store, _, _ := newTestStore(t)
 	store.SetProposed("error:a", &PatchProposal{File: "a.go", PatchedContent: "x"})

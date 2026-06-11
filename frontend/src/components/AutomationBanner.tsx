@@ -35,7 +35,7 @@ export function AutomationBanner() {
     const latest = active[0];
     return (
       <div className="automation-banner banner-working" role="status">
-        <span className="banner-spin" aria-hidden>
+        <span className="ap-spin" aria-hidden>
           ⟳
         </span>
         <span className="banner-text">
@@ -75,7 +75,7 @@ export function AutomationBanner() {
   if (streaming) {
     return (
       <div className="automation-banner banner-working" role="status">
-        <span className="banner-spin" aria-hidden>
+        <span className="ap-spin" aria-hidden>
           ⟳
         </span>
         <span className="banner-text">Manual run in progress — live steps are streaming below.</span>

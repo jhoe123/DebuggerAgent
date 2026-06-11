@@ -342,6 +342,31 @@ type GitSourceStatus struct {
 	LastError          string         `json:"lastError,omitempty"`
 }
 
+// GitSourceApplyResult is the POST /api/git-source/config response: the resolved
+// status, plus what the server stopped/reset when the update re-targeted the managed
+// source (a different repo URL or working branch than the one being processed).
+type GitSourceApplyResult struct {
+	GitSourceStatus      // embedded → flat JSON, backward-compatible with GitSourceStatus consumers
+	TargetChanged   bool `json:"targetChanged,omitempty"`
+	HaltedRuns      int  `json:"haltedRuns,omitempty"`
+	WorkspaceReset  bool `json:"workspaceReset,omitempty"`
+	PatchesCleared  bool `json:"patchesCleared,omitempty"`
+}
+
+// DemoResetResult is the POST /api/demo/reset response (the judge-facing "reset
+// testing" action): what was stopped/cleared and how the original demo source was
+// restored — a fresh clone of the configured repo (git) or the local console reset.
+type DemoResetResult struct {
+	Mode            string `json:"mode"` // "git" | "local" | "none"
+	HaltedRuns      int    `json:"haltedRuns"`
+	WorkspaceReset  bool   `json:"workspaceReset,omitempty"`  // clone deleted
+	Reconnected     bool   `json:"reconnected,omitempty"`     // fresh clone succeeded
+	SourceReset     bool   `json:"sourceReset,omitempty"`     // local democtl source restored
+	AutopatchPaused bool   `json:"autopatchPaused,omitempty"` // autopatch was ON and is now paused
+	RedeployStarted bool   `json:"redeployStarted,omitempty"` // background redeploy of the original app kicked off
+	Error           string `json:"error,omitempty"`
+}
+
 // ConfirmFixResult is returned by POST /api/confirm-fix (the human merge gate).
 type ConfirmFixResult struct {
 	ProblemID    string `json:"problemId"`

@@ -267,6 +267,9 @@ func main() {
 	mux.HandleFunc("POST /api/git-source/branch", h.gitSourceBranch)
 	mux.HandleFunc("POST /api/git-source/cleanup", h.gitSourceCleanup)
 	mux.HandleFunc("POST /api/confirm-fix", h.confirmFix)
+	// Judge-facing testing reset: stops automation, clears patches + lifecycle
+	// artifacts, and restores the original (buggy) demo source.
+	mux.HandleFunc("POST /api/demo/reset", h.demoReset)
 
 	if cfg.EnableTestConsole {
 		mux.HandleFunc("GET /api/test/status", h.testStatus)
@@ -451,6 +454,96 @@ func (h *handlers) testReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, h.demo.Status(ctx))
+}
+
+// demoReset is the judge-facing "reset testing" action: stop all in-flight automation,
+// pause autopatch, discard pending patch proposals and per-problem lifecycle artifacts,
+// then restore the demo app's original (buggy) source — a fresh clone of the configured
+// repository when the Git source is in use, else the local Test Console reset. In git
+// mode it also redeploys the restored source to the demo service in the background
+// (~10 min) so the LIVE app trips its seeded bugs again. Autopatch must pause here:
+// otherwise the next poll would immediately re-fix the restored bugs and its pipeline
+// would race the background redeploy over the same GCS base and Cloud Run service.
+// Always responds 200; partial failures land in the error field for a precise toast.
+func (h *handlers) demoReset(w http.ResponseWriter, r *http.Request) {
+	log.Printf("demo reset: stopping automation and restoring the original source")
+	res := api.DemoResetResult{Mode: "none"}
+	res.HaltedRuns = h.ap.StopAll("Halted — testing was reset; the demo source was restored to its original state.")
+	if cfg := h.ap.Snapshot().Config; cfg.Enabled {
+		cfg.Enabled = false
+		h.ap.SetConfig(cfg)
+		res.AutopatchPaused = true
+	}
+	// Manual pipeline runs aren't engine-tracked; abort an in-flight remote build too
+	// (no-op when idle; local runners don't implement CancelActive).
+	if c, ok := h.runner.(interface{ CancelActive(context.Context) error }); ok {
+		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := c.CancelActive(cctx); err != nil {
+			log.Printf("demo reset: cancel remote build: %v", err)
+		}
+		ccancel()
+	}
+	h.agent.Patches().Reset()
+	h.arts.Reset() // cleared before reconnect so no stale fix-branch records rehydrate
+
+	switch {
+	case h.gs.Available() && strings.TrimSpace(h.gs.Config().RepoURL) != "":
+		res.Mode = "git"
+		if err := h.gs.ResetWorkspace(); err != nil {
+			res.Error = "reset workspace: " + err.Error()
+			break
+		}
+		res.WorkspaceReset = true
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+		defer cancel()
+		if _, err := h.gs.Connect(ctx, nil); err != nil {
+			res.Error = "re-clone: " + err.Error()
+			break
+		}
+		res.Reconnected = true
+		if h.runner != nil {
+			res.RedeployStarted = true
+			go h.redeployOriginal()
+		}
+	case h.demo != nil:
+		res.Mode = "local"
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+		if err := h.demo.ResetSource(ctx); err != nil {
+			res.Error = err.Error()
+		} else {
+			res.SourceReset = true // ResetSource rebuilds + relaunches, so the local app is already buggy again
+		}
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// redeployOriginal rebuilds and redeploys the demo app from the freshly restored
+// (original) source so the live service trips its seeded bugs again. Patch-free:
+// Apply=false ships the source as-is, and tests are skipped — the original code is
+// intentionally buggy, so a regression gate would block the deploy. ForceSync uploads
+// the full pristine tree so no patched overlay survives in the build base. Runs
+// detached (a Cloud Build takes ~10 min); the result lands in the history log.
+func (h *handlers) redeployOriginal() {
+	ps := h.pipe.Get()
+	opts := democtl.Options{
+		Apply: false, Test: false, Build: true, Deploy: true,
+		BuildStrategy: ps.BuildStrategy,
+		Deployment:    democtl.DeploymentSpec{Target: ps.DeployTarget, Params: ps.DeployParams},
+		ForceSync:     true,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
+	defer cancel()
+	log.Printf("demo reset: redeploying the original demo app in the background")
+	result := h.runner.Remediate(ctx, opts, func(s api.Step) {
+		log.Printf("demo reset redeploy: [%s] %s %s", s.Stage, s.Status, s.Message)
+	})
+	h.hist.RecordPipeline("demo reset — redeploy original app", result)
+	if result.Success {
+		log.Printf("demo reset: original demo app redeployed (%s)", result.Verify)
+	} else {
+		log.Printf("demo reset: redeploy of the original app FAILED (%s)", result.Verify)
+	}
 }
 
 // remediate runs the auto-remediation pipeline, streaming each stage (SSE) then a result event.
@@ -941,16 +1034,47 @@ func (h *handlers) gitSourceStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // gitSourceConfigSet merges a config update (empty token preserves the stored secret).
+// When the update re-targets the managed source (different repo URL or working branch),
+// it first stops everything aimed at the old project — the active autopilot batch, any
+// in-flight remote build, and pending patch proposals — and on a repo change deletes
+// the workspace clone so the follow-up connect starts fresh. The response reports what
+// was stopped/reset so the UI can warn the user. (A manual LOCAL pipeline run has no
+// cancel handle today; it dies with its own timeout and lands against old artifacts.)
 func (h *handlers) gitSourceConfigSet(w http.ResponseWriter, r *http.Request) {
 	var in api.GitSourceConfig
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid git source config"})
 		return
 	}
+	repoChanged, branchChanged := h.gs.TargetChange(in) // BEFORE SetConfig merges the update
+	res := api.GitSourceApplyResult{TargetChanged: repoChanged || branchChanged}
+	if res.TargetChanged {
+		log.Printf("git source: target changed (repo=%v branch=%v) — stopping work on the old project", repoChanged, branchChanged)
+		res.HaltedRuns = h.ap.StopAll("Halted — Git source target changed; work against the old project was stopped.")
+		// Manual pipeline runs aren't engine-tracked; abort an in-flight remote build too
+		// (no-op when idle; local runners don't implement CancelActive).
+		if c, ok := h.runner.(interface{ CancelActive(context.Context) error }); ok {
+			cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if err := c.CancelActive(cctx); err != nil {
+				log.Printf("git source: cancel remote build: %v", err)
+			}
+			ccancel()
+		}
+		h.agent.Patches().Reset()
+		res.PatchesCleared = true
+		if repoChanged { // branch-only change keeps the clone; fetch+checkout switches branches
+			if err := h.gs.ResetWorkspace(); err != nil {
+				log.Printf("git source: reset workspace: %v", err)
+			} else {
+				res.WorkspaceReset = true
+			}
+		}
+	}
 	h.gs.SetConfig(in)
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	writeJSON(w, http.StatusOK, h.gs.Status(ctx))
+	res.GitSourceStatus = h.gs.Status(ctx)
+	writeJSON(w, http.StatusOK, res)
 }
 
 // gitSourceValidate checks a repo URL (+ optional token) and lists its remote branches

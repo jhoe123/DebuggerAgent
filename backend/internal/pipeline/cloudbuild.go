@@ -190,15 +190,17 @@ func (r *CloudRunner) Remediate(ctx context.Context, opts democtl.Options, emit 
 		return api.PipelineResult{Steps: steps, Success: false}
 	}
 
-	// Resolve the patch set: the explicit consolidation batch, or the single pending patch.
+	// Resolve the patch set: the explicit consolidation batch, or the single pending
+	// patch. Apply=false with no patches means "ship the source as-is" — the demo
+	// reset uses this to redeploy the restored original code.
 	applyList := opts.Patches
-	if len(applyList) == 0 {
+	if len(applyList) == 0 && opts.Apply {
 		if prop := r.patches.Latest(); prop != nil {
 			applyList = []tools.PatchProposal{*prop}
 		}
-	}
-	if len(applyList) == 0 {
-		return fail("apply", "No proposed patch to deploy", "run Investigate + add to batch first")
+		if len(applyList) == 0 {
+			return fail("apply", "No proposed patch to deploy", "run Investigate + add to batch first")
+		}
 	}
 
 	// Overlay every fix + (resolved) regression test + a Dockerfile onto the source.
@@ -208,11 +210,11 @@ func (r *CloudRunner) Remediate(ctx context.Context, opts democtl.Options, emit 
 		overlay[p.File] = p.PatchedContent
 		files = append(files, p.File)
 	}
-	// Drive test/rationale resolution from the first patch (one combined gate per build).
-	primary := applyList[0]
 
 	runName := ""
-	if opts.Test {
+	if opts.Test && len(applyList) > 0 {
+		// Drive test/rationale resolution from the first patch (one combined gate per build).
+		primary := applyList[0]
 		step(api.Step{Stage: "test", Status: "running", Message: "Resolving regression test (reuse or generate)…"})
 		rn, gen, err := r.genTest(ctx, primary.File, primary.Rationale, "")
 		if err != nil {
@@ -224,6 +226,8 @@ func (r *CloudRunner) Remediate(ctx context.Context, opts democtl.Options, emit 
 			files = append(files, k)
 		}
 		step(api.Step{Stage: "test", Status: "ok", Message: "Regression test ready: " + runName})
+	} else if opts.Test {
+		step(api.Step{Stage: "test", Status: "info", Message: "No patches to gate — skipping the regression test"})
 	}
 
 	// Effective deploy config: UI/Options params (project/region/service/bucket/repo)

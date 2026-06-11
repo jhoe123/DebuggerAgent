@@ -52,6 +52,18 @@ func New(baseDir string, clearOnStart bool) *Store {
 	return s
 }
 
+// Reset clears every per-problem artifact (memory + the on-disk mirror). Used by the
+// judge-facing demo reset: after the original (buggy) source is restored, lifecycle
+// chips must not keep claiming problems are patched/confirmed.
+func (s *Store) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m = map[string]*api.ProblemArtifact{}
+	if s.dir != "" {
+		_ = os.RemoveAll(s.dir)
+	}
+}
+
 // get returns the artifact for id, creating a blank one if absent. Caller holds mu.
 func (s *Store) get(problemID, title, kind string) *api.ProblemArtifact {
 	a := s.m[problemID]

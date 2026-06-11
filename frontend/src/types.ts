@@ -350,6 +350,28 @@ export interface GitSourceStatus {
   lastError?: string;
 }
 
+// GitSourceApplyResult is the POST /api/git-source/config response: the status plus
+// what the server stopped/reset when the update re-targeted the repo or working branch.
+export interface GitSourceApplyResult extends GitSourceStatus {
+  targetChanged?: boolean;
+  haltedRuns?: number;
+  workspaceReset?: boolean;
+  patchesCleared?: boolean;
+}
+
+// DemoResetResult is the POST /api/demo/reset response (the judge-facing "reset
+// testing" action): what was stopped/cleared and how the original source was restored.
+export interface DemoResetResult {
+  mode: "git" | "local" | "none";
+  haltedRuns: number;
+  workspaceReset?: boolean; // clone deleted
+  reconnected?: boolean; // fresh clone succeeded
+  sourceReset?: boolean; // local console source restored
+  autopatchPaused?: boolean; // autopatch was ON and is now paused
+  redeployStarted?: boolean; // background redeploy of the original app kicked off
+  error?: string;
+}
+
 // ConfirmFixResult is returned by POST /api/confirm-fix (the human merge gate).
 export interface ConfirmFixResult {
   problemId: string;

@@ -461,3 +461,88 @@ func TestProcessBatch_ProposeOnlyWhenNoDemo(t *testing.T) {
 		t.Fatalf("error:checkout phase = %q, want proposed", p)
 	}
 }
+
+// StopAll (a Git source target swap) must cancel the active batch + remote build,
+// drain queued problems, halt every non-terminal run WITH the swap reason (the
+// dying batch's markHalted must not overwrite it), and clear skip/baseline so the
+// next poll re-picks the still-open problems against the new source.
+func TestStopAll_HaltsActiveCancelsBuildAndDrainsQueue(t *testing.T) {
+	ag := &fakeAgent{patches: map[string]*tools.PatchProposal{
+		"error:checkout": {File: "checkout.go", PatchedContent: "x"},
+	}}
+	demo := newCancelableDemo()
+	e := newTestEngine(ag, demo)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.runBatch(context.Background(), "error:checkout")
+	}()
+	select {
+	case <-demo.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pipeline never started")
+	}
+
+	// The batch is blocked in the pipeline (past its coalesce window): seed a second,
+	// still-queued problem and some baseline state for StopAll to clear.
+	e.mu.Lock()
+	e.runs["performance:report"] = &api.AutopilotRun{ProblemID: "performance:report", Phase: "queued"}
+	e.order = append(e.order, "performance:report")
+	e.baseline["error:checkout"] = 3
+	e.mu.Unlock()
+	e.queue <- "performance:report"
+
+	const reason = "Halted - Git source target changed."
+	if halted := e.StopAll(reason); halted < 1 {
+		t.Fatalf("StopAll halted %d runs, want >= 1", halted)
+	}
+	select {
+	case <-demo.cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("StopAll never reached the runner's CancelActive")
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("batch never finished after StopAll")
+	}
+
+	if got := drainQueue(e); len(got) != 0 {
+		t.Fatalf("queue should be drained, got %v", got)
+	}
+	for _, id := range []string{"error:checkout", "performance:report"} {
+		if p := phaseOf(e, id); p != "halted" {
+			t.Fatalf("%s phase = %q, want halted", id, p)
+		}
+	}
+	e.mu.Lock()
+	msg := e.runs["error:checkout"].Message
+	skips, base := len(e.skip), len(e.baseline)
+	stopping := e.stopping
+	e.mu.Unlock()
+	if msg != reason {
+		t.Fatalf("halted message = %q, want the StopAll reason", msg)
+	}
+	if skips != 0 || base != 0 {
+		t.Fatalf("skip/baseline must stay cleared for the new source, got %d skips / %d baselined", skips, base)
+	}
+	if stopping {
+		t.Fatal("stopping flag must reset when the batch unwinds")
+	}
+}
+
+// StopAll with nothing in flight is a safe no-op that reports zero halted runs.
+func TestStopAll_IdleReturnsZero(t *testing.T) {
+	demo := newCancelableDemo()
+	e := newTestEngine(&fakeAgent{}, demo)
+
+	if halted := e.StopAll("swap"); halted != 0 {
+		t.Fatalf("idle StopAll halted %d runs, want 0", halted)
+	}
+	select {
+	case <-demo.cancelled:
+		t.Fatal("idle StopAll must not cancel the runner")
+	default:
+	}
+}

@@ -6,6 +6,7 @@ import { useSettings } from "../context/SettingsContext";
 import { useToast } from "../context/ToastContext";
 import { agoLabel } from "../hooks/usePolling";
 import { AutomationBanner } from "../components/AutomationBanner";
+import { DebugMenu } from "../components/DebugMenu";
 import { ToastViewport } from "../components/Toast";
 
 const NAV = [
@@ -86,6 +87,7 @@ export function AppShell() {
               {config.enabled ? `● Autopatch ON${activeCount > 0 ? ` (${activeCount} active)` : ""}` : "○ Autopatch PAUSED"}
             </button>
           )}
+          <DebugMenu />
           {demoAppUrl && (
             <a
               className="ghost-btn"

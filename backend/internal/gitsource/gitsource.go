@@ -69,6 +69,39 @@ func (m *Manager) Config() Config { return m.store.Get() }
 // SetConfig merges a config update (an empty token preserves the stored secret).
 func (m *Manager) SetConfig(in api.GitSourceConfig) { m.store.Set(in) }
 
+// TargetChange reports whether an incoming config update re-targets the managed
+// source: a different repository URL (repoChanged) or working branch (branchChanged)
+// than currently stored — using the same "empty keeps existing" semantics as
+// Store.Set. Both are false when no clone exists on disk yet (there is nothing to
+// stop or clean). Call BEFORE SetConfig merges the update.
+func (m *Manager) TargetChange(in api.GitSourceConfig) (repoChanged, branchChanged bool) {
+	cur := m.store.Get()
+	if !isGitRepo(cur.CloneDir) {
+		return false, false
+	}
+	if u := strings.TrimSpace(in.RepoURL); u != "" && !sameRepoURL(u, cur.RepoURL) {
+		repoChanged = true
+	}
+	if b := strings.TrimSpace(in.WorkingBranch); b != "" && b != cur.WorkingBranch {
+		branchChanged = true
+	}
+	return repoChanged, branchChanged
+}
+
+// ResetWorkspace disconnects and deletes the clone directory so the next Connect
+// performs a fresh clone. Per-problem branch state is dropped (the branches are gone
+// with the directory); the stored config — including the auth token — is untouched.
+// The active source roots keep pointing at the old path until Connect re-points them:
+// reads fail loudly against the deleted dir rather than silently hitting a stale tree.
+func (m *Manager) ResetWorkspace() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.connected = false
+	m.branches = map[string]string{}
+	m.lastErr = ""
+	return removeDirRobust(m.store.Get().CloneDir)
+}
+
 // ValidateRemote checks that a repo URL (with an optional token) is reachable and lists
 // its remote branches — without cloning. It runs `git ls-remote --symref <url>` with the
 // token injected as an HTTPS auth header (never in the URL or logs). A blank token falls
@@ -129,19 +162,35 @@ func (m *Manager) Connect(ctx context.Context, emit func(api.Step)) (string, err
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if isGitRepo(dir) {
-		step(api.Step{Stage: "fetch", Status: "running", Message: "Fetching latest from origin…"})
-		if out, err := m.runGit(ctx, dir, true, "fetch", "origin", "--prune"); err != nil {
-			return m.failConnect(step, "fetch", out, err)
+	needsClone := !isGitRepo(dir)
+	if !needsClone {
+		// Defensive: a clone whose origin points at a different repository (the target
+		// was re-configured via env, API, or a stale dir from a previous process) must
+		// be replaced, not fetched into.
+		origin, err := m.runGit(ctx, dir, false, "remote", "get-url", "origin")
+		if err != nil || !sameRepoURL(strings.TrimSpace(origin), cfg.RepoURL) {
+			step(api.Step{Stage: "clean", Status: "running", Message: "Workspace points at a different repository — removing it for a fresh clone…"})
+			if rerr := removeDirRobust(dir); rerr != nil {
+				return m.failConnect(step, "clean", rerr.Error(), rerr)
+			}
+			m.branches = map[string]string{}
+			step(api.Step{Stage: "clean", Status: "ok", Message: "Old workspace removed"})
+			needsClone = true
 		}
-	} else {
+	}
+	if needsClone {
 		step(api.Step{Stage: "clone", Status: "running", Message: "Cloning " + maskRepoURL(cfg.RepoURL) + "…"})
 		_ = os.MkdirAll(filepath.Dir(dir), 0o755)
-		_ = os.RemoveAll(dir) // a partial/empty dir would break a fresh clone
+		_ = removeDirRobust(dir) // a partial/empty dir would break a fresh clone
 		if out, err := m.runGit(ctx, "", true, "clone", cfg.RepoURL, dir); err != nil {
 			return m.failConnect(step, "clone", out, err)
 		}
 		step(api.Step{Stage: "clone", Status: "ok", Message: "Cloned into working directory"})
+	} else {
+		step(api.Step{Stage: "fetch", Status: "running", Message: "Fetching latest from origin…"})
+		if out, err := m.runGit(ctx, dir, true, "fetch", "origin", "--prune"); err != nil {
+			return m.failConnect(step, "fetch", out, err)
+		}
 	}
 
 	if err := m.ensureWorkingBranch(ctx, dir, cfg.WorkingBranch, cfg.BaseBranch); err != nil {
@@ -561,6 +610,46 @@ func maskRepoURL(u string) string {
 		return scheme + rest
 	}
 	return u
+}
+
+// canonRepoURL normalizes a repo URL for equality checks: embedded userinfo stripped
+// (maskRepoURL), trailing "/" and ".git" trimmed, backslashes normalized to slashes
+// (local paths on Windows), lowercased. Lenient on purpose — the UI round-trips the
+// MASKED preview through the form, and a re-applied unchanged URL must never read as
+// a different repository (which would trigger a destructive workspace reset).
+func canonRepoURL(u string) string {
+	u = maskRepoURL(u)
+	u = strings.ReplaceAll(u, "\\", "/")
+	u = strings.TrimRight(u, "/")
+	u = strings.TrimSuffix(u, ".git")
+	return strings.ToLower(u)
+}
+
+// sameRepoURL reports whether two repo URLs point at the same repository.
+func sameRepoURL(a, b string) bool { return canonRepoURL(a) == canonRepoURL(b) }
+
+// removeDirRobust deletes a directory tree, retrying after chmod-ing everything
+// writable — git pack files are read-only, which makes a plain os.RemoveAll fail
+// on Windows.
+func removeDirRobust(dir string) error {
+	if strings.TrimSpace(dir) == "" {
+		return nil
+	}
+	if err := os.RemoveAll(dir); err == nil {
+		return nil
+	}
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			_ = os.Chmod(path, 0o777)
+		} else {
+			_ = os.Chmod(path, 0o666)
+		}
+		return nil
+	})
+	return os.RemoveAll(dir)
 }
 
 // parseLsRemote parses `git ls-remote --symref <url>` output into the sorted, de-duped

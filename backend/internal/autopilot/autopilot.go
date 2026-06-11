@@ -94,6 +94,7 @@ type Engine struct {
 	skip      map[string]bool
 	activeIDs map[string]bool // problems in the in-flight batch (for targeted Cancel)
 	cancel    context.CancelFunc
+	stopping  bool // a StopAll teardown is unwinding — the dying batch must not re-mark its problems skip
 
 	// baseCtx/list are captured by Run so SetConfig can kick an immediate poll the
 	// moment autopatch is enabled (instead of waiting up to a full poll interval).
@@ -257,6 +258,7 @@ func (e *Engine) runBatch(parent context.Context, firstID string) {
 		e.mu.Lock()
 		e.activeIDs = nil
 		e.cancel = nil
+		e.stopping = false
 		e.mu.Unlock()
 	}()
 
@@ -561,6 +563,41 @@ func (e *Engine) SetConfig(cfg api.AutopilotConfig) {
 	}
 }
 
+// StopAll halts everything for a source-target swap: it cancels the active batch
+// (context + remote Cloud Build), drains the queue, and marks every non-terminal
+// run halted with the given reason. It returns how many runs it halted. Unlike
+// Cancel, problems are NOT marked skip — and baseline is cleared — so the next
+// poll re-picks the still-open problems against the NEW source. History and
+// artifacts are untouched (they are the audit record).
+func (e *Engine) StopAll(reason string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.cancel != nil {
+		e.stopping = true // the dying batch's markHalted must not undo the skip clear below
+		e.cancel()
+		e.cancelRunnerBuild()
+	}
+	for draining := true; draining; {
+		select {
+		case <-e.queue:
+		default:
+			draining = false
+		}
+	}
+	halted := 0
+	for _, r := range e.runs {
+		if r != nil && !terminal(r.Phase) {
+			r.Phase = "halted"
+			r.Message = reason
+			r.UpdatedAt = nowRFC()
+			halted++
+		}
+	}
+	e.skip = map[string]bool{}
+	e.baseline = map[string]int{}
+	return halted
+}
+
 // Cancel halts a problem's automation (and prevents it being re-picked), handing
 // it to manual control. Cancelling the active run's context also kills in-flight
 // go test/build (democtl uses exec.CommandContext).
@@ -688,8 +725,15 @@ func (e *Engine) kindOf(id string) string {
 
 func (e *Engine) markHalted(id string) {
 	e.mu.Lock()
-	e.skip[id] = true
+	if !e.stopping {
+		e.skip[id] = true // a StopAll teardown wants the problem re-picked against the new source
+	}
+	r := e.runs[id]
+	alreadyHalted := r != nil && r.Phase == "halted"
 	e.mu.Unlock()
+	if alreadyHalted {
+		return // keep the original halt reason (e.g. StopAll's source-swap message)
+	}
 	e.setPhase(id, "halted", "Halted — handed to manual control.", nil)
 }
 
