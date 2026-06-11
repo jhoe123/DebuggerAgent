@@ -28,13 +28,15 @@ function sinceLabel(iso: string): string {
   return `${Math.round(mins / 1440)}d ago`;
 }
 
-function kb(bytes?: number): string | null {
-  if (!bytes) return null;
-  return bytes > 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
-}
-
 // Renders the problem cards only — the parent (ProblemsPage) owns the <aside>,
 // header, and filter toolbar so it can switch between the active and hidden lists.
+//
+// A card is deliberately minimal: it surfaces only the issue (title), its type
+// (severity + perf), current status (lifecycle / autopilot), and how long ago it
+// started. Everything else (root cause, metrics, batch staging, links) lives in the
+// detail panel once the card is selected. Controls follow status:
+//   • dismiss ✕ / restore ↩ — shown per list (active vs hidden)
+//   • Halt — shown only while autopilot is actively working the problem
 export function ProblemList({
   problems,
   selectedId,
@@ -42,46 +44,37 @@ export function ProblemList({
   artifactMap,
   showHidden,
   selectMode,
-  stagedIds,
-  canStage,
-  onToggleBatch,
   selected,
   onToggleSelect,
   onDismiss,
   onRestore,
-  investigating = false,
   onCancel,
+  halting,
+  streaming,
 }: {
   problems: Problem[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   artifactMap: Record<string, ProblemArtifact>;
   showHidden: boolean;
-  selectMode: boolean; // true => checkbox is dismiss multi-select; false => batch membership
-  stagedIds: Set<string>;
-  canStage: (id: string) => boolean;
-  onToggleBatch: (id: string) => void;
+  selectMode: boolean; // true => the checkbox is a dismiss multi-select
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
   onDismiss: (id: string) => void;
   onRestore: (id: string) => void;
-  investigating?: boolean;
   onCancel?: (id: string) => void;
+  halting: Set<string>;
+  streaming: boolean;
 }) {
   const { runs, cancel } = useAutopilot();
+  const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
   return (
     <div className={`problem-cards${selectMode ? " select-mode" : ""}`}>
       {problems.map((p) => {
-        const occ = p.occurrences ?? p.affectedUsers;
-        const scanned = kb(p.grailScannedBytes);
         const run = runs[p.id];
         const art = artifactMap[p.id];
         const chip = art ? OVERALL_CHIP[art.overall] : null;
-        const inBatch = stagedIds.has(p.id);
-        const batchDisabled = !inBatch && !canStage(p.id); // can't stage an un-investigated problem
-        const autoActive = run ? isActivePhase(run.phase) : false;
-        const isCurrentManual = p.id === selectedId && investigating;
-        const isCurrentlyBusy = autoActive || isCurrentManual;
+
         return (
           <div
             key={p.id}
@@ -92,36 +85,32 @@ export function ProblemList({
             onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onSelect(p.id)}
           >
             <div className="problem-top">
-              {!showHidden && (
+              {selectMode && !showHidden && (
                 <input
                   type="checkbox"
                   className="problem-check"
-                  checked={selectMode ? selected.has(p.id) : inBatch}
-                  disabled={selectMode ? false : (batchDisabled || isCurrentlyBusy)}
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={() => (selectMode ? onToggleSelect(p.id) : onToggleBatch(p.id))}
-                  aria-label={selectMode ? `Select ${p.title}` : `Add ${p.title} to deployment batch`}
-                  title={
-                    selectMode
-                      ? "Select to dismiss"
-                      : isCurrentlyBusy
-                        ? "Cannot modify batch while investigating or auto-patching"
-                        : batchDisabled
-                          ? "Investigate first to add to batch"
-                          : inBatch
-                            ? "In deployment batch — click to remove"
-                            : "Add to deployment batch"
-                  }
+                  checked={selected.has(p.id)}
+                  disabled={streaming}
+                  onClick={stop}
+                  onChange={() => onToggleSelect(p.id)}
+                  aria-label={`Select ${p.title}`}
+                  title="Select to dismiss"
                 />
               )}
+              {/* Type of issue */}
               <span className={`badge sev-${p.severity.toLowerCase()}`}>{p.severity}</span>
+              {p.kind === "performance" && (
+                <span className="mini-chip perf" title="Performance problem">⏱ perf</span>
+              )}
+              {/* Time */}
               <span className="problem-since">{sinceLabel(p.startedAt)}</span>
               <span className="problem-actions">
                 {showHidden ? (
                   <button
                     className="problem-restore"
+                    disabled={streaming}
                     onClick={(e) => {
-                      e.stopPropagation();
+                      stop(e);
                       onRestore(p.id);
                     }}
                     title="Restore to the active list"
@@ -131,8 +120,9 @@ export function ProblemList({
                 ) : (
                   <button
                     className="problem-dismiss"
+                    disabled={streaming || !!(run && isActivePhase(run.phase))}
                     onClick={(e) => {
-                      e.stopPropagation();
+                      stop(e);
                       onDismiss(p.id);
                     }}
                     title="Dismiss (hide) this problem"
@@ -143,59 +133,41 @@ export function ProblemList({
                 )}
               </span>
             </div>
+
+            {/* What the issue is */}
             <div className="problem-title">{p.title}</div>
-            <div className="problem-meta">
-              {p.entity} · {occ.toLocaleString()} occurrences
-            </div>
-            {run && (
-              <div className="autopilot-row" title={run.message}>
-                <span className={`autopilot-chip ap-${run.phase}`}>
-                  <span className={isActivePhase(run.phase) ? "ap-spin" : ""}>{PHASE[run.phase].icon}</span>{" "}
-                  {PHASE[run.phase].label}
-                </span>
-                {isActivePhase(run.phase) && (
+
+            {/* Status — durable lifecycle chip and/or live autopilot phase. */}
+            {(chip || run) && (
+              <div className="problem-tags" style={{ display: "flex", alignItems: "center", gap: "0.4rem", marginTop: "0.5rem", flexWrap: "wrap" }}>
+                {chip && (
+                  <span className={`mini-chip ${chip.cls}`} title={`Lifecycle: ${art!.overall}`}>
+                    {chip.label}
+                  </span>
+                )}
+                {run && (
+                  <span className={`autopilot-chip ap-${run.phase}`} title={run.message} style={{ margin: 0 }}>
+                    <span className={isActivePhase(run.phase) ? "ap-spin" : ""}>{PHASE[run.phase].icon}</span>{" "}
+                    {PHASE[run.phase].label}
+                  </span>
+                )}
+                {run && isActivePhase(run.phase) && (
                   <button
                     className="halt-btn"
                     title="Halt automation and take over manually"
+                    disabled={halting.has(p.id) || streaming}
                     onClick={(e) => {
-                      e.stopPropagation();
+                      stop(e);
                       if (onCancel) onCancel(p.id);
                       else cancel(p.id);
                     }}
+                    style={{ padding: "0.1rem 0.4rem", fontSize: "0.7rem", display: "inline-flex", alignItems: "center", height: "18px" }}
                   >
-                    Halt
+                    {halting.has(p.id) ? "Halting..." : "Halt"}
                   </button>
                 )}
               </div>
             )}
-            <div className="problem-chips">
-              {p.kind === "performance" && (
-                <span className="mini-chip perf" title="Performance problem">⏱ perf</span>
-              )}
-              {p.metric && <span className="mini-chip" title="Latency percentile">{p.metric}</span>}
-              {scanned && <span className="mini-chip" title="Dynatrace Grail bytes scanned">Grail: {scanned}</span>}
-              {/* Durable lifecycle status from the server artifact (one chip, kept clean). */}
-              {chip && (
-                <span className={`mini-chip ${chip.cls}`} title={`Lifecycle: ${art!.overall}`}>
-                  {chip.label}
-                </span>
-              )}
-              {/* Per-problem Git fix branch (shown until the fix is confirmed/merged). */}
-              {art?.fixBranch && art.overall !== "confirmed" && (
-                <span className="mini-chip" title="Git fix branch">⎇ {art.fixBranch}</span>
-              )}
-              {p.dynatraceUrl && (
-                <a
-                  className="mini-chip link"
-                  href={p.dynatraceUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  Open in Dynatrace ↗
-                </a>
-              )}
-            </div>
           </div>
         );
       })}

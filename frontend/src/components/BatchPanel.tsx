@@ -20,7 +20,7 @@ const OVERALL_CHIP: Record<string, { label: string; cls: string }> = {
 // and an expand toggle that reveals the staged list, strategy selectors, live steps,
 // and result. Hidden until something is staged (or a run is in flight / just finished).
 export function BatchPanel() {
-  const { staged, consoleAvailable, refreshPatches, refreshArtifacts, reloadHistory, setStreaming, artifactMap, clearPatches, demoAppUrl, demoAppName } = useAppData();
+  const { staged, consoleAvailable, refreshPatches, refreshArtifacts, reloadHistory, streaming, setStreaming, artifactMap, clearPatches, demoAppUrl, demoAppName } = useAppData();
   const toast = useToast();
   const [opts, setOpts] = useState<PipelineOptions>({
     apply: true,
@@ -138,7 +138,7 @@ export function BatchPanel() {
             <button
               className="ghost-btn"
               onClick={clear}
-              disabled={isDeploying}
+              disabled={isDeploying || streaming}
               style={{ border: "1px solid var(--border)", color: "var(--text)" }}
             >
               Clear batch
@@ -146,7 +146,7 @@ export function BatchPanel() {
             <button
               className="run-btn"
               onClick={run}
-              disabled={isDeploying || !canDeploy}
+              disabled={isDeploying || !canDeploy || streaming}
               title={canDeploy ? "" : "Deploy needs the local Test Console or the cloud-build runner"}
             >
               {isDeploying ? "Deploying…" : hasSucceeded ? `Redeploy ${n}` : `Deploy ${n}`}
@@ -172,15 +172,19 @@ export function BatchPanel() {
                           {chip.label}
                         </span>
                       )}
-                      <button className="problem-dismiss batch-remove" title="Remove from batch" onClick={() => remove(s.problemId)} disabled={running}>
+                      <button className="problem-dismiss batch-remove" title="Remove from batch" onClick={() => remove(s.problemId)} disabled={running || streaming}>
                         ✕
                       </button>
                     </div>
                     {s.rationale && <div className="batch-row-rationale muted">{s.rationale}</div>}
                     {s.unifiedDiff && (
-                      <details className="alternatives">
-                        <summary>View diff</summary>
-                        <DiffViewer diff={s.unifiedDiff} />
+                      <details className="collapsible-details">
+                        <summary>
+                          <span>View patch diff</span>
+                        </summary>
+                        <div className="collapsible-details-content">
+                          <DiffViewer diff={s.unifiedDiff} />
+                        </div>
                       </details>
                     )}
                   </div>

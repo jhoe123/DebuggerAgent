@@ -15,7 +15,7 @@ const NAV = [
 const THEME_ICON = { light: "☀", dark: "☾", system: "◐" } as const;
 
 export function AppShell() {
-  const { mock, refreshProblems, refreshTestStatus, problemsUpdatedAt } = useAppData();
+  const { mock, refreshProblems, refreshTestStatus, problemsUpdatedAt, streaming } = useAppData();
   const { theme, setTheme } = useSettings();
 
   function cycleTheme() {
@@ -59,6 +59,7 @@ export function AppShell() {
               refreshProblems();
               refreshTestStatus();
             }}
+            disabled={streaming}
             title="Refresh data"
           >
             ↻ Refresh

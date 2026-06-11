@@ -1,15 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import type { Investigation, Step } from "../types";
-import { confirmFix, investigateStream, stagePatch, unstagePatch } from "../api";
+import { confirmFix, investigateStream } from "../api";
 import { useAppData } from "../context/AppDataContext";
-import { agoLabel } from "../hooks/usePolling";
 import { useAutopilot, isActivePhase } from "../context/AutopilotContext";
 import { useToast } from "../context/ToastContext";
 import { useLocalStore } from "../context/LocalStoreContext";
 import { ProblemList } from "../components/ProblemList";
 import { InvestigationPanel } from "../components/Investigation";
-import { AgentSteps } from "../components/AgentSteps";
 import { BatchPanel } from "../components/BatchPanel";
 import { StageTracker } from "../components/StageTracker";
 import { Skeleton, EmptyState, ErrorState } from "../components/States";
@@ -31,12 +29,11 @@ export function ProblemsPage() {
     problems,
     problemsLoading,
     problemsError,
-    problemsUpdatedAt,
     refreshProblems,
     reloadHistory,
+    streaming,
     setStreaming,
     artifactMap,
-    staged,
     refreshPatches,
     refreshArtifacts,
     gitSource,
@@ -57,29 +54,34 @@ export function ProblemsPage() {
   const [result, setResult] = useState<Investigation | null>(null);
   const [steps, setSteps] = useState<Step[]>([]);
   const [investigating, setInvestigating] = useState(false);
+  const [halting, setHalting] = useState<Set<string>>(new Set());
   const [mergeBusy, setMergeBusy] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
+  const [logOpen, setLogOpen] = useState(true);
 
   async function handleCancel(problemId: string) {
+    setHalting((prev) => {
+      const next = new Set(prev);
+      next.add(problemId);
+      return next;
+    });
     try {
       await cancel(problemId);
       await refreshProblems();
       await refreshPatches();
       await refreshArtifacts();
       reloadHistory();
+      toast.success("Autopilot run halted");
     } catch (e) {
       toast.error(`Halt failed: ${String(e)}`);
+    } finally {
+      setHalting((prev) => {
+        const next = new Set(prev);
+        next.delete(problemId);
+        return next;
+      });
     }
   }
 
-  async function onRefresh() {
-    setRefreshing(true);
-    try {
-      await refreshProblems();
-    } finally {
-      setRefreshing(false);
-    }
-  }
 
   // List management state.
   const [query, setQuery] = useState("");
@@ -94,21 +96,6 @@ export function ProblemsPage() {
   const selectedId = id ?? null;
   const run = selectedId ? runs[selectedId] : undefined;
   const autoActive = run ? isActivePhase(run.phase) : false;
-
-  // Batch membership: the checkbox stages/unstages (default mode). Only investigated
-  // problems (those with an artifact) can be staged.
-  const stagedIds = useMemo(() => new Set(staged.map((s) => s.problemId)), [staged]);
-  const canStage = (pid: string) => !!artifactMap[pid];
-  async function onToggleBatch(pid: string) {
-    try {
-      if (stagedIds.has(pid)) await unstagePatch(pid);
-      else await stagePatch(pid);
-      await refreshPatches();
-      await refreshArtifacts();
-    } catch (e) {
-      toast.error(`Couldn't update batch: ${String(e)}`);
-    }
-  }
 
   const activeProblems = useMemo(() => problems.filter((p) => !isDismissed(p.id, p.startedAt)), [problems, isDismissed]);
   const hiddenProblems = useMemo(() => problems.filter((p) => isDismissed(p.id, p.startedAt)), [problems, isDismissed]);
@@ -230,6 +217,7 @@ export function ProblemsPage() {
 
   const selectedProblem = problems.find((p) => p.id === selectedId);
   const listError = problemsError && problems.length === 0;
+  const activity = selectedId ? (steps.length > 0 ? steps : run?.steps ?? []) : [];
 
   return (
     <>
@@ -245,31 +233,16 @@ export function ProblemsPage() {
         <div className="problems-col">
           <aside className="problems">
             <div className="problems-head">
+              <h3 style={{ margin: 0, fontSize: "0.95rem", fontWeight: 600 }}>Incidents</h3>
               {!problemsLoading && !listError && (
                 <div className="problems-head-actions">
-                  {problemsUpdatedAt && (
-                    <span className="muted problems-updated" title="Last updated">
-                      updated {agoLabel(problemsUpdatedAt)}
-                    </span>
-                  )}
-                  <button
-                    className="ghost-btn refresh-btn"
-                    onClick={onRefresh}
-                    disabled={refreshing}
-                    title="Refresh the problem list now"
-                  >
-                    <span className={refreshing ? "ap-spin" : ""} aria-hidden>
-                      ⟳
-                    </span>{" "}
-                    Refresh
-                  </button>
                   <button
                     className={`ghost-btn hidden-toggle${showHidden ? " active" : ""}`}
                     onClick={() => {
                       setShowHidden((s) => !s);
                       setSelected(new Set());
                     }}
-                    disabled={!showHidden && hiddenProblems.length === 0}
+                    disabled={streaming || (!showHidden && hiddenProblems.length === 0)}
                     title="Show dismissed problems"
                   >
                     {showHidden ? "← Active" : `Hidden (${hiddenProblems.length})`}
@@ -303,6 +276,7 @@ export function ProblemsPage() {
                         clearDismissed();
                         setLastDismissed([]);
                       }}
+                      disabled={streaming}
                     >
                       Restore all ({hiddenProblems.length})
                     </button>
@@ -314,15 +288,13 @@ export function ProblemsPage() {
                     artifactMap={artifactMap}
                     showHidden
                     selectMode={selectMode}
-                    stagedIds={stagedIds}
-                    canStage={canStage}
-                    onToggleBatch={onToggleBatch}
                     selected={selected}
                     onToggleSelect={toggleSelect}
                     onDismiss={(pid) => handleDismiss([pid])}
                     onRestore={(pid) => handleRestore([pid])}
-                    investigating={investigating}
                     onCancel={handleCancel}
+                    halting={halting}
+                    streaming={streaming}
                   />
                 </>
               )
@@ -331,56 +303,65 @@ export function ProblemsPage() {
             ) : (
               <>
                 <div className="problems-toolbar">
-                  <input
-                    className="filter-input"
-                    type="search"
-                    placeholder="Search problems…"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                  />
-                  <select
-                    className="filter-select"
-                    value={severityFilter}
-                    onChange={(e) => setSeverityFilter(e.target.value)}
-                    aria-label="Filter by severity"
-                  >
-                    <option value="all">All severities</option>
-                    {severities.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    className="filter-select"
-                    value={kindFilter}
-                    onChange={(e) => setKindFilter(e.target.value as KindFilter)}
-                    aria-label="Filter by kind"
-                  >
-                    <option value="all">All kinds</option>
-                    <option value="error">Errors</option>
-                    <option value="performance">Performance</option>
-                  </select>
-                  <select
-                    className="filter-select"
-                    value={sortBy}
-                    onChange={(e) => setSortBy(e.target.value as SortBy)}
-                    aria-label="Sort problems"
-                  >
-                    <option value="recent">Newest</option>
-                    <option value="severity">Severity</option>
-                    <option value="impact">Most affected</option>
-                  </select>
-                  <button
-                    className={`ghost-btn select-toggle clear-all${selectMode ? " active" : ""}`}
-                    onClick={() => {
-                      setSelectMode((s) => !s);
-                      setSelected(new Set());
-                    }}
-                    title="Select multiple problems to dismiss"
-                  >
-                    {selectMode ? "Done" : "Select"}
-                  </button>
+                  <div className="problems-search-row">
+                    <input
+                      className="filter-input"
+                      type="search"
+                      placeholder="Search problems…"
+                      value={query}
+                      disabled={streaming}
+                      onChange={(e) => setQuery(e.target.value)}
+                    />
+                    <button
+                      className={`ghost-btn select-toggle${selectMode ? " active" : ""}`}
+                      onClick={() => {
+                        setSelectMode((s) => !s);
+                        setSelected(new Set());
+                      }}
+                      disabled={streaming}
+                      title="Select multiple problems to dismiss"
+                    >
+                      {selectMode ? "Done" : "Select"}
+                    </button>
+                  </div>
+                  <div className="problems-filter-row">
+                    <select
+                      className="filter-select"
+                      value={severityFilter}
+                      disabled={streaming}
+                      onChange={(e) => setSeverityFilter(e.target.value)}
+                      aria-label="Filter by severity"
+                    >
+                      <option value="all">All severities</option>
+                      {severities.map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      className="filter-select"
+                      value={kindFilter}
+                      disabled={streaming}
+                      onChange={(e) => setKindFilter(e.target.value as KindFilter)}
+                      aria-label="Filter by kind"
+                    >
+                      <option value="all">All kinds</option>
+                      <option value="error">Errors</option>
+                      <option value="performance">Performance</option>
+                    </select>
+                    <select
+                      className="filter-select"
+                      value={sortBy}
+                      disabled={streaming}
+                      onChange={(e) => setSortBy(e.target.value as SortBy)}
+                      aria-label="Sort problems"
+                    >
+                      <option value="recent">Newest</option>
+                      <option value="severity">Severity</option>
+                      <option value="impact">Most affected</option>
+                    </select>
+                  </div>
                 </div>
 
                 {selectMode && (
@@ -389,14 +370,14 @@ export function ProblemsPage() {
                     <button
                       className="link-btn"
                       onClick={() => handleDismiss([...selected])}
-                      disabled={selected.size === 0}
+                      disabled={selected.size === 0 || streaming}
                     >
                       Dismiss selected
                     </button>
                     <button
                       className="link-btn"
                       onClick={() => handleDismiss(visible.map((p) => p.id))}
-                      disabled={visible.length === 0}
+                      disabled={visible.length === 0 || streaming}
                     >
                       Clear all
                     </button>
@@ -408,7 +389,7 @@ export function ProblemsPage() {
                     title="No matches"
                     message="No problems match your filters."
                     action={
-                      <button className="ghost-btn" onClick={clearFilters}>
+                      <button className="ghost-btn" onClick={clearFilters} disabled={streaming}>
                         Clear filters
                       </button>
                     }
@@ -421,15 +402,13 @@ export function ProblemsPage() {
                     artifactMap={artifactMap}
                     showHidden={false}
                     selectMode={selectMode}
-                    stagedIds={stagedIds}
-                    canStage={canStage}
-                    onToggleBatch={onToggleBatch}
                     selected={selected}
                     onToggleSelect={toggleSelect}
                     onDismiss={(pid) => handleDismiss([pid])}
                     onRestore={(pid) => handleRestore([pid])}
-                    investigating={investigating}
                     onCancel={handleCancel}
+                    halting={halting}
+                    streaming={streaming}
                   />
                 )}
               </>
@@ -439,15 +418,19 @@ export function ProblemsPage() {
 
         <main className="content">
           {!selectedId && (
-            <EmptyState
-              title="Select a problem"
-              message="Pick a Dynatrace problem on the left to investigate its root cause."
-            />
+            <div className="detail-group">
+              <EmptyState
+                title="Select a problem"
+                message="Pick a Dynatrace problem on the left to investigate its root cause."
+              />
+            </div>
           )}
 
           {/* Still resolving the list for a deep-linked id — don't flash "Unknown problem". */}
           {selectedId && !selectedProblem && !artifactMap[selectedId] && !result && problemsLoading && (
-            <Skeleton count={2} />
+            <div className="detail-group">
+              <Skeleton count={2} />
+            </div>
           )}
 
           {/* Genuinely not in a loaded, non-empty list and nothing cached to show for it. */}
@@ -457,75 +440,161 @@ export function ProblemsPage() {
             !result &&
             !problemsLoading &&
             problems.length > 0 && (
-              <EmptyState
-                title="Unknown problem"
-                message={`No problem matches "${selectedId}".`}
-                action={
-                  <button className="ghost-btn" onClick={() => navigate("/problems")}>
-                    Back to list
-                  </button>
-                }
-              />
+              <div className="detail-group">
+                <EmptyState
+                  title="Unknown problem"
+                  message={`No problem matches "${selectedId}".`}
+                  action={
+                    <button className="ghost-btn" onClick={() => navigate("/problems")}>
+                      Back to list
+                    </button>
+                  }
+                />
+              </div>
             )}
 
-          {selectedId && artifactMap[selectedId] && (
-            <StageTracker
-              artifact={artifactMap[selectedId]}
-              showMergeButton={
-                gitSource?.enabled &&
-                gitSource?.branchPerFix &&
-                !!gitSource?.workingBranch
-              }
-              onMerge={handleMerge}
-              merging={mergeBusy || autoActive || investigating}
-              demoAppUrl={demoAppUrl}
-              demoAppName={demoAppName}
-            />
-          )}
+          {/* Group 1: Header and Status */}
+          {selectedId && (selectedProblem || artifactMap[selectedId] || run) && (
+            <section className="detail-group detail-group-status">
+              {selectedProblem && (
+                <header className="detail-head" style={{ borderBottom: "none", marginBottom: "1rem", paddingBottom: 0 }}>
+                  <div className="detail-head-top">
+                    <span className={`badge sev-${selectedProblem.severity.toLowerCase()}`}>
+                      {selectedProblem.severity}
+                    </span>
+                    {selectedProblem.kind === "performance" && (
+                      <span className="mini-chip perf" title="Performance problem">⏱ perf</span>
+                    )}
+                    {selectedProblem.dynatraceUrl && (
+                      <a
+                        className="mini-chip link detail-dt-link"
+                        href={selectedProblem.dynatraceUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open in Dynatrace ↗
+                      </a>
+                    )}
+                  </div>
+                  <h2 className="detail-title" style={{ margin: "0.5rem 0 0" }}>{selectedProblem.title}</h2>
+                  <p className="detail-meta">
+                    {selectedProblem.entity} ·{" "}
+                    {(selectedProblem.occurrences ?? selectedProblem.affectedUsers).toLocaleString()} occurrences
+                    {selectedProblem.metric ? ` · ${selectedProblem.metric}` : ""}
+                  </p>
+                </header>
+              )}
 
-          {selectedId && run && (
-            <section className={`autopilot-panel ap-${run.phase}`}>
-              <div className="autopilot-panel-head">
-                <h3>
-                  Autopilot {autoActive ? "is handling this" : run.phase === "halted" ? "halted" : "result"}
-                </h3>
-                {autoActive && (
-                  <button className="halt-btn" onClick={() => selectedId && handleCancel(selectedId)}>
-                    Halt &amp; take over
+              {selectedId && (artifactMap[selectedId] || run || activity.length > 0) && (
+                <StageTracker
+                  artifact={artifactMap[selectedId]}
+                  showMergeButton={
+                    gitSource?.enabled &&
+                    gitSource?.branchPerFix &&
+                    !!gitSource?.workingBranch
+                  }
+                  onMerge={handleMerge}
+                  merging={mergeBusy || autoActive || investigating}
+                  demoAppUrl={demoAppUrl}
+                  demoAppName={demoAppName}
+                  steps={steps}
+                  run={run}
+                  autoActive={autoActive}
+                  investigating={investigating}
+                  logOpen={logOpen}
+                  onToggleLog={setLogOpen}
+                  haltingActive={selectedId ? halting.has(selectedId) : false}
+                  onCancel={() => selectedId && handleCancel(selectedId)}
+                  streaming={streaming}
+                />
+              )}
+
+              {selectedId && selectedProblem && !result && !autoActive && (
+                <div className="investigate-cta" style={{ margin: "1rem 0 0" }}>
+                  <p style={{ margin: "0 0 1rem" }}>
+                    {run
+                      ? "Take over manually — investigate and propose a fix yourself."
+                      : "The agent pulls this problem from Dynatrace, correlates the stack trace to source, and proposes a fix."}
+                  </p>
+                  <button className="investigate-btn" onClick={onInvestigate} disabled={investigating || streaming}>
+                    {investigating ? "Investigating…" : run ? "Investigate manually" : "Investigate with AI"}
                   </button>
-                )}
-              </div>
-              <p className="muted">{run.message || run.phase}</p>
-              {run.steps && run.steps.length > 0 && <AgentSteps steps={run.steps} />}
+                </div>
+              )}
             </section>
           )}
 
-          {selectedId && selectedProblem && !result && !autoActive && (
-            <div className="investigate-cta">
-              <p>
-                {run
-                  ? "Take over manually — investigate and propose a fix yourself."
-                  : "Investigate "}
-                {!run && <code>{selectedId}</code>}
-                {!run &&
-                  " — the agent pulls the problem from Dynatrace, correlates the stack trace to source, and proposes a fix."}
-              </p>
-              <button className="investigate-btn" onClick={onInvestigate} disabled={investigating}>
-                {investigating ? "Investigating…" : "Investigate with AI"}
-              </button>
-            </div>
+          {/* Group 2: The Problem */}
+          {selectedId && result && (
+            <section className="detail-group detail-group-problem">
+              <h3 className="detail-group-title">The Problem</h3>
+              
+              <div className="problem-diagnostics">
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+                  <h4 style={{ margin: 0, fontSize: "0.95rem" }}>Diagnostics &amp; Root Cause</h4>
+                  <span className="confidence" title="Agent confidence">
+                    {Math.round(result.confidence * 100)}% confidence
+                  </span>
+                </div>
+
+                {result.rootCause.summary && <p className="rc-summary" style={{ margin: "0 0 1rem" }}>{result.rootCause.summary}</p>}
+
+                <dl className="rc-grid">
+                  <dt>What</dt>
+                  <dd>{result.rootCause.what}</dd>
+                  <dt>Where</dt>
+                  <dd>
+                    <code>
+                      {result.rootCause.where.file}:{result.rootCause.where.line}
+                    </code>
+                  </dd>
+                  <dt>Why</dt>
+                  <dd>{result.rootCause.why}</dd>
+                  <dt>Impact</dt>
+                  <dd>{result.rootCause.impact}</dd>
+                </dl>
+
+                {result.rootCause.details && (
+                  <details className="collapsible-details further-reading" style={{ marginTop: "1rem" }}>
+                    <summary>
+                      <span>Further reading — technical detail</span>
+                    </summary>
+                    <div className="collapsible-details-content">
+                      <p style={{ margin: 0, lineHeight: 1.55 }}>{result.rootCause.details}</p>
+                    </div>
+                  </details>
+                )}
+
+                {result.alternatives.length > 0 && (
+                  <details className="collapsible-details alternatives-detail" style={{ marginTop: "1rem" }}>
+                    <summary>
+                      <span>Alternative hypotheses ({result.alternatives.length})</span>
+                    </summary>
+                    <div className="collapsible-details-content">
+                      <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+                        {result.alternatives.map((a, i) => (
+                          <li key={i} style={{ marginBottom: "0.4rem" }}>{a}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </details>
+                )}
+              </div>
+            </section>
           )}
 
-          {steps.length > 0 && <AgentSteps steps={steps} title="Agent activity" />}
-
-          {result && (
-            <InvestigationPanel
-              data={result}
-              onApproved={reloadHistory}
-              onReinvestigate={onInvestigate}
-              reinvestigating={investigating}
-              autoActive={autoActive}
-            />
+          {/* Group 3: The Solution */}
+          {selectedId && result && (
+            <section className="detail-group detail-group-solution">
+              <h3 className="detail-group-title">The Solution</h3>
+              <InvestigationPanel
+                data={result}
+                onApproved={reloadHistory}
+                onReinvestigate={onInvestigate}
+                reinvestigating={investigating}
+                autoActive={autoActive}
+              />
+            </section>
           )}
         </main>
       </div>

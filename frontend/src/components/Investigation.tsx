@@ -20,8 +20,8 @@ export function InvestigationPanel({
   reinvestigating?: boolean;
   autoActive?: boolean;
 }) {
-  const { rootCause, confidence, alternatives, proposedPatch, suggestedTest } = data;
-  const { staged, refreshPatches, refreshArtifacts, artifactMap } = useAppData();
+  const { proposedPatch, suggestedTest } = data;
+  const { staged, refreshPatches, refreshArtifacts, artifactMap, streaming } = useAppData();
   const { saveRun } = useLocalStore();
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -32,6 +32,8 @@ export function InvestigationPanel({
   const art = artifactMap[data.problemId];
   const confirmed = art?.overall === "confirmed";
   const canConfirm = !!art?.fixBranch && art.overall === "deployed";
+  const isRunning = art?.overall === "running";
+  const isActionDisabled = busy || reinvestigating || autoActive || isRunning || streaming;
 
   async function onConfirm() {
     setBusy(true);
@@ -85,66 +87,35 @@ export function InvestigationPanel({
   }
 
   return (
-    <section className="investigation">
-      <div className="rc-header">
-        <h2>Root cause</h2>
-        <div className="rc-actions">
-          <span className="confidence" title="Agent confidence">
-            {Math.round(confidence * 100)}% confidence
-          </span>
-          <button className="ghost-btn" onClick={onCopy}>
-            {copied ? "Copied!" : "Copy report"}
-          </button>
-          <button className="ghost-btn" onClick={() => downloadMarkdown(`incident-${data.problemId}.md`, toMarkdown(data))}>
-            Download .md
-          </button>
-        </div>
+    <div className="solution-panel">
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginBottom: "1rem" }}>
+        <button className="ghost-btn" onClick={onCopy}>
+          {copied ? "Copied!" : "Copy solution"}
+        </button>
+        <button className="ghost-btn" onClick={() => downloadMarkdown(`solution-${data.problemId}.md`, toMarkdown(data))}>
+          Download solution .md
+        </button>
       </div>
 
-      {rootCause.summary && <p className="rc-summary">{rootCause.summary}</p>}
-
-      <dl className="rc-grid">
-        <dt>What</dt>
-        <dd>{rootCause.what}</dd>
-        <dt>Where</dt>
-        <dd>
-          <code>
-            {rootCause.where.file}:{rootCause.where.line}
-          </code>
-        </dd>
-        <dt>Why</dt>
-        <dd>{rootCause.why}</dd>
-        <dt>Impact</dt>
-        <dd>{rootCause.impact}</dd>
-      </dl>
-
-      {rootCause.details && (
-        <details className="alternatives further-reading">
-          <summary>Further reading — technical detail</summary>
-          <p>{rootCause.details}</p>
-        </details>
-      )}
-
-      {alternatives.length > 0 && (
-        <details className="alternatives">
-          <summary>Alternative hypotheses ({alternatives.length})</summary>
-          <ul>
-            {alternatives.map((a, i) => (
-              <li key={i}>{a}</li>
-            ))}
-          </ul>
-        </details>
-      )}
-
-      <h3>Proposed patch</h3>
-      <p className="rationale">{proposedPatch.rationale}</p>
-      <DiffViewer diff={proposedPatch.unifiedDiff} />
+      <details className="collapsible-details proposed-patch-card" open={true}>
+        <summary>
+          <span>Proposed patch</span>
+        </summary>
+        <div className="collapsible-details-content">
+          <p className="rationale" style={{ marginTop: 0 }}>{proposedPatch.rationale}</p>
+          <DiffViewer diff={proposedPatch.unifiedDiff} />
+        </div>
+      </details>
 
       {suggestedTest && (
-        <div className="suggested-test">
-          <h4>Suggested regression test</h4>
-          <p>{suggestedTest}</p>
-        </div>
+        <details className="collapsible-details suggested-test-card" open={true}>
+          <summary>
+            <span>Suggested regression test</span>
+          </summary>
+          <div className="collapsible-details-content">
+            <p style={{ margin: 0, lineHeight: 1.5 }}>{suggestedTest}</p>
+          </div>
+        </details>
       )}
 
       <div className="investigation-actions">
@@ -154,7 +125,7 @@ export function InvestigationPanel({
           </span>
         ) : canConfirm ? (
           <div className="confirm-fix">
-            <button className="approve-btn" onClick={onConfirm} disabled={busy || reinvestigating || autoActive}>
+            <button className="approve-btn" onClick={onConfirm} disabled={isActionDisabled}>
               {busy ? "Merging…" : "Confirm fixed — merge & clean up branch"}
             </button>
             <p className="muted">
@@ -163,13 +134,15 @@ export function InvestigationPanel({
           </div>
         ) : isStaged ? (
           <span className="approved">
-            ✓ Staged — in the deployment batch.{" "}
-            <button className="link-btn" onClick={onUnstage} disabled={busy || reinvestigating || autoActive}>
-              Remove from batch
-            </button>
+            {isRunning ? "⚙ Deploying patch..." : "✓ Staged — in the deployment batch."}{" "}
+            {!isRunning && (
+              <button className="link-btn" onClick={onUnstage} disabled={isActionDisabled}>
+                Remove from batch
+              </button>
+            )}
           </span>
         ) : (
-          <button className="approve-btn" onClick={onStage} disabled={busy || reinvestigating || autoActive}>
+          <button className="approve-btn" onClick={onStage} disabled={isActionDisabled}>
             {busy ? "Adding…" : "Add to batch"}
           </button>
         )}
@@ -177,7 +150,7 @@ export function InvestigationPanel({
           <button
             className="ghost-btn"
             onClick={onReinvestigate}
-            disabled={busy || reinvestigating || autoActive}
+            disabled={isActionDisabled}
             title="Re-run the agent to refresh the root cause and proposed fix (re-records the proposal so it can be staged)"
           >
             {reinvestigating ? "Re-investigating…" : "Re-investigate"}
@@ -185,13 +158,13 @@ export function InvestigationPanel({
         )}
       </div>
 
-      <FollowUp problemId={data.problemId} />
-    </section>
+      <FollowUp problemId={data.problemId} disabled={isActionDisabled} />
+    </div>
   );
 }
 
 // Natural-language follow-up Q&A about the incident (agent may run DQL).
-function FollowUp({ problemId }: { problemId: string }) {
+function FollowUp({ problemId, disabled }: { problemId: string; disabled: boolean }) {
   const [q, setQ] = useState("");
   const [thread, setThread] = useState<{ q: string; a: string }[]>([]);
   const [asking, setAsking] = useState(false);
@@ -199,7 +172,7 @@ function FollowUp({ problemId }: { problemId: string }) {
 
   async function onAsk() {
     const question = q.trim();
-    if (!question || asking) return;
+    if (!question || asking || disabled) return;
     setAsking(true);
     setQ("");
     try {
@@ -228,9 +201,9 @@ function FollowUp({ problemId }: { problemId: string }) {
           placeholder="e.g. how many times did this happen in the last day?"
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && onAsk()}
-          disabled={asking}
+          disabled={asking || disabled}
         />
-        <button onClick={onAsk} disabled={asking || !q.trim()}>
+        <button onClick={onAsk} disabled={asking || !q.trim() || disabled}>
           {asking ? "Thinking…" : "Ask"}
         </button>
       </div>
